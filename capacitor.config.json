@@ -1,0 +1,16 @@
+{
+  "appId": "com.abuadel.chargingpoint",
+  "appName": "نقطة شحن أبو عادل",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0ea5e9",
+      "showSpinner": false
+    }
+  },
+  "cordova": {}
+}

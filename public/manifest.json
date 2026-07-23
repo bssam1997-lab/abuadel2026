@@ -1,0 +1,27 @@
+{
+  "name": "نظام نقطة شحن أبو عادل",
+  "short_name": "نقطة شحن أبو عادل",
+  "description": "نظام إدارة مالي وتشغيلي متكامل لنقطة شحن الأجهزة وبيع المشروبات وإدارة الديون",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f4f6fb",
+  "theme_color": "#0ea5e9",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
