@@ -1,7 +1,8 @@
 // ============================================================
 // نظام نقطة شحن أبو عادل — طبقة قاعدة البيانات المحلية
-// LocalStorage-based offline database (no external services)
+// IndexedDB-backed offline database via localforage (no external services)
 // ============================================================
+import { getItem, setItem } from '../utils/storage';
 
 // كل الجداول في النظام
 export type TableName =
@@ -42,7 +43,7 @@ const tableKey = (t: TableName) => `${STORAGE_PREFIX}${t}`;
 // قراءة جدول كامل من LocalStorage
 function readTable<T = any>(t: TableName): T[] {
   try {
-    const raw = localStorage.getItem(tableKey(t));
+    const raw = getItem(tableKey(t));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -51,7 +52,7 @@ function readTable<T = any>(t: TableName): T[] {
 
 // كتابة جدول كامل إلى LocalStorage
 function writeTable<T = any>(t: TableName, rows: T[]): void {
-  localStorage.setItem(tableKey(t), JSON.stringify(rows));
+  setItem(tableKey(t), JSON.stringify(rows));
 }
 
 // توليد معرف فريد
