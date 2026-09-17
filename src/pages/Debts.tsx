@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
@@ -480,8 +480,8 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
 
   const filteredDebts = typeFilter === 'all' ? debts : debts.filter((d) => d.type === typeFilter);
 
-  const totalChargingDebt = customers.reduce((s, c) => s + Math.max(0, c.charging_debt || 0), 0);
-  const totalDrinksDebt = customers.reduce((s, c) => s + Math.max(0, c.drinks_debt || 0), 0);
+  const totalChargingDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.charging_debt || 0), 0), [customers]);
+  const totalDrinksDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.drinks_debt || 0), 0), [customers]);
 
   return (
     <div className="space-y-5 animate-fade">
@@ -536,6 +536,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                       (c.notes || '').toLowerCase().includes(q)
                     );
                   })
+                  .slice(0, 50)
                   .map((c) => (
                   <tr key={c.id} className="table-row dark:text-slate-200">
                     <td className="px-4 py-3 font-semibold">
@@ -636,7 +637,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                {filteredDebts.map((d) => (
+                {filteredDebts.slice(0, 50).map((d) => (
                   <tr key={d.id} className={`table-row dark:text-slate-200 ${d.reversed ? 'opacity-40' : ''}`}>
                     <td className="px-3 py-2 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">{fmtDateTime(d.created_at)}</td>
                     <td className="px-3 py-2"><Badge color={debtTypeColor(d.type)}>{debtTypeLabel(d.type)}</Badge></td>

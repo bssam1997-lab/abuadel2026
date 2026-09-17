@@ -435,7 +435,7 @@ export default function Charging() {
       }
       map.get(key)!.devices.push(d);
     });
-    return Array.from(map.values());
+    return Array.from(map.values()).slice(0, 50);
   }, [visible]);
 
   // ============================================================

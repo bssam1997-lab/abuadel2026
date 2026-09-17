@@ -93,14 +93,14 @@ export default function Drinks() {
 
   useEffect(() => { loadProducts(); loadGroups(); loadInvoices(); }, []);
 
-  const cartSubtotal = cart.reduce((s, i) => s + i.line_total, 0);
-  const discountAmount = (() => {
+  const cartSubtotal = useMemo(() => cart.reduce((s, i) => s + i.line_total, 0), [cart]);
+  const discountAmount = useMemo(() => {
     if (discountType === 'fixed') return Math.min(Number(discountValue) || 0, cartSubtotal);
     if (discountType === 'percentage') return Math.round((cartSubtotal * (Number(discountValue) || 0) / 100) * 100) / 100;
     return 0;
-  })();
+  }, [discountType, discountValue, cartSubtotal]);
   // Discount group auto-apply: for every 2 units of same group, apply discount once
-  const groupDiscount = (() => {
+  const groupDiscount = useMemo(() => {
     const byGroup: Record<string, { qty: number; unit_price: number; group: DiscountGroup }> = {};
     cart.forEach((i) => {
       const prod = db.first<Product>('products', (r) => r.id === i.product_id);
@@ -121,13 +121,13 @@ export default function Drinks() {
       }
     });
     return total;
-  })();
+  }, [cart, discountGroups]);
   const totalDiscount = discountAmount + groupDiscount;
-  const cartTotal = Math.max(0, cartSubtotal - totalDiscount);
-  const cartProfit = cart.reduce((s, i) => s + (i.unit_price - i.cost_price) * i.qty, 0) - totalDiscount;
-  const actualPaid = paid ? cartTotal : (Number(paidAmount) || 0);
-  const remainingDebt = cartTotal - actualPaid;
-  const realizedProfit = cartTotal > 0 ? (actualPaid / cartTotal) * cartProfit : 0;
+  const cartTotal = useMemo(() => Math.max(0, cartSubtotal - totalDiscount), [cartSubtotal, totalDiscount]);
+  const cartProfit = useMemo(() => cart.reduce((s, i) => s + (i.unit_price - i.cost_price) * i.qty, 0) - totalDiscount, [cart, totalDiscount]);
+  const actualPaid = useMemo(() => paid ? cartTotal : (Number(paidAmount) || 0), [paid, cartTotal, paidAmount]);
+  const remainingDebt = useMemo(() => cartTotal - actualPaid, [cartTotal, actualPaid]);
+  const realizedProfit = useMemo(() => cartTotal > 0 ? (actualPaid / cartTotal) * cartProfit : 0, [cartTotal, actualPaid, cartProfit]);
 
   const saveGroup = () => {
     if (!gName.trim() || !gValue) { push('أدخل الاسم والقيمة', 'error'); return; }
@@ -832,7 +832,7 @@ export default function Drinks() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                  {filteredInvoices.map((inv) => {
+                  {filteredInvoices.slice(0, 50).map((inv) => {
                     const cust = inv.customer_id ? db.first<any>('customers', (r) => r.id === inv.customer_id) : null;
                     const items = db.select<any>('invoice_items').filter((i) => i.invoice_id === inv.id);
                     const isOpen = expandedInv === inv.id;
