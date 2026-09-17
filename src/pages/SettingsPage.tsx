@@ -1,11 +1,26 @@
 import { useState } from 'react';
-import { Settings as SettingsIcon, Users, Lock, Plus, Trash2, Shield, KeyRound } from 'lucide-react';
+import { Settings as SettingsIcon, Users, Lock, Plus, Trash2, Shield, KeyRound, PiggyBank, ChevronDown } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
 import Modal from '../components/Modal';
 import { SectionTitle, Badge } from '../components/ui';
 import type { AppUser } from '../lib/types';
+
+type Page = 'dashboard' | 'charging' | 'drinks' | 'debts' | 'partners' | 'cashboxes' | 'inventory' | 'suppliers' | 'collectors' | 'reports';
+const ALL_PAGES: { id: Page; label: string }[] = [
+  { id: 'dashboard', label: 'لوحة التحكم' },
+  { id: 'charging', label: 'قسم الشحن' },
+  { id: 'drinks', label: 'قسم المشروبات' },
+  { id: 'debts', label: 'إدارة الديون' },
+  { id: 'partners', label: 'حسابات الشركاء' },
+  { id: 'cashboxes', label: 'الصناديق المالية' },
+  { id: 'inventory', label: 'المخزون' },
+  { id: 'suppliers', label: 'الموردون' },
+  { id: 'collectors', label: 'المحصلون' },
+  { id: 'reports', label: 'التقارير' },
+];
+const DEFAULT_EMPLOYEE_PAGES: Page[] = ['dashboard', 'charging', 'drinks', 'debts', 'collectors'];
 
 export default function SettingsPage({ requirePin }: { requirePin: (fn: () => void) => void }) {
   const { currentUser, users, settings, refreshUsers, refreshSettings, log } = useStore();
@@ -16,6 +31,7 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
   const [savings, setSavings] = useState(String(settings.daily_savings_per_partner || '10'));
   const [shopName, setShopName] = useState(settings.shop_name || '');
   const [ownerPw, setOwnerPw] = useState(settings.owner_password || '');
+  const [permExpand, setPermExpand] = useState<string | null>(null); // expanded user id for permissions
 
   const addUser = () => {
     if (!name.trim()) return;
@@ -52,6 +68,25 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
     push('تم حفظ إعداد الحصالة', 'success');
   };
 
+  const toggleSavingsEnabled = () => {
+    const next = settings.savings_enabled === '0' ? '1' : '0';
+    db.setSetting('savings_enabled', next);
+    refreshSettings();
+    push(next === '1' ? 'تم تفعيل الحصالة اليومية' : 'تم تعطيل الحصالة اليومية', 'success');
+  };
+
+  const getUserPerms = (u: AppUser): Page[] => {
+    if (!u.page_permissions) return DEFAULT_EMPLOYEE_PAGES;
+    try { return JSON.parse(u.page_permissions as string); } catch { return DEFAULT_EMPLOYEE_PAGES; }
+  };
+
+  const togglePagePerm = (u: AppUser, pageId: Page) => {
+    const current = getUserPerms(u);
+    const next = current.includes(pageId) ? current.filter((p) => p !== pageId) : [...current, pageId];
+    db.updateById('app_users', u.id, { page_permissions: JSON.stringify(next) });
+    refreshUsers();
+  };
+
   const saveShopName = () => {
     db.setSetting('shop_name', shopName);
     db.setSetting('owner_password', ownerPw);
@@ -84,10 +119,19 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
             </div>
           </div>
           <div>
-            <label className="label">حصالة يومية لكل شريك (₪)</label>
-            <div className="flex gap-2">
+            <label className="label flex items-center gap-2">
+              <PiggyBank size={16} /> حصالة يومية لكل شريك (₪)
+            </label>
+            <div className="flex gap-2 items-center">
               <input className="input" type="number" value={savings} onChange={(e) => setSavings(e.target.value)} />
               <button onClick={saveSavings} className="btn-primary">حفظ</button>
+              <button
+                onClick={toggleSavingsEnabled}
+                className={`px-3 py-2 rounded-xl text-sm font-bold transition ${settings.savings_enabled !== '0' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'}`}
+                title={settings.savings_enabled !== '0' ? 'الحصالة مفعّلة — اضغط لتعطيلها' : 'الحصالة معطّلة — اضغط لتفعيلها'}
+              >
+                {settings.savings_enabled !== '0' ? '● مفعّلة' : '○ معطّلة'}
+              </button>
             </div>
           </div>
           <div className="md:col-span-2">
@@ -122,25 +166,46 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
         </div>
         <div className="space-y-2">
           {users.map((u) => (
-            <div key={u.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
-              <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-full bg-sky-100 flex items-center justify-center text-sky-700 font-bold">{u.name[0]}</div>
-                <div>
-                  <p className="font-semibold text-slate-700">{u.name}</p>
-                  <p className="text-xs text-slate-400">{u.role === 'owner' ? 'مالك النظام' : 'موظف'}</p>
+            <div key={u.id} className="rounded-xl bg-slate-50 dark:bg-slate-800 overflow-hidden">
+              <div className="flex items-center justify-between p-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-full bg-sky-100 dark:bg-sky-900 flex items-center justify-center text-sky-700 dark:text-sky-300 font-bold">{u.name[0]}</div>
+                  <div>
+                    <p className="font-semibold text-slate-700 dark:text-slate-200">{u.name}</p>
+                    <p className="text-xs text-slate-400">{u.role === 'owner' ? 'مالك النظام' : 'موظف'}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge color={u.role === 'owner' ? 'sky' : 'slate'}>{u.role === 'owner' ? 'مالك' : 'موظف'}</Badge>
+                  <Badge color={u.is_active ? 'emerald' : 'rose'}>{u.is_active ? 'نشط' : 'متوقف'}</Badge>
+                  {currentUser?.role === 'owner' && (
+                    <div className="flex gap-1">
+                      {u.role === 'employee' && (
+                        <button onClick={() => setPermExpand(permExpand === u.id ? null : u.id)} className="p-1.5 rounded-lg text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-900/30" title="صلاحيات الصفحات"><ChevronDown size={14} className={`transition ${permExpand === u.id ? 'rotate-180' : ''}`} /></button>
+                      )}
+                      <button onClick={() => toggleRole(u)} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700" title="تبديل الدور"><Shield size={14} /></button>
+                      <button onClick={() => toggleActive(u)} className="p-1.5 rounded-lg text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/30" title="تفعيل/إيقاف"><Lock size={14} /></button>
+                      <button onClick={() => deleteUser(u)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="حذف"><Trash2 size={14} /></button>
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Badge color={u.role === 'owner' ? 'sky' : 'slate'}>{u.role === 'owner' ? 'مالك' : 'موظف'}</Badge>
-                <Badge color={u.is_active ? 'emerald' : 'rose'}>{u.is_active ? 'نشط' : 'متوقف'}</Badge>
-                {currentUser?.role === 'owner' && (
-                  <div className="flex gap-1">
-                    <button onClick={() => toggleRole(u)} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100" title="تبديل الدور"><Shield size={14} /></button>
-                    <button onClick={() => toggleActive(u)} className="p-1.5 rounded-lg text-amber-500 hover:bg-amber-50" title="تفعيل/إيقاف"><Lock size={14} /></button>
-                    <button onClick={() => deleteUser(u)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50" title="حذف"><Trash2 size={14} /></button>
+              {permExpand === u.id && u.role === 'employee' && (
+                <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2">
+                  <p className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-2">الصفحات المسموح بها</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                    {ALL_PAGES.map((pg) => {
+                      const allowed = getUserPerms(u).includes(pg.id);
+                      return (
+                        <button key={pg.id} onClick={() => togglePagePerm(u, pg.id)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold text-right transition ${allowed ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-white text-slate-400 border border-slate-200 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-500'}`}>
+                          {allowed ? '✓ ' : '○ '}{pg.label}
+                        </button>
+                      );
+                    })}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { CupSoda, Plus, Trash2, ShoppingCart, Pencil, Package, Check, Tag, Undo2, Lock, Search, UserPlus, FileText, ChevronDown, ChevronLeft, Link2, X } from 'lucide-react';
+import { CupSoda, Plus, Trash2, ShoppingCart, Pencil, Package, Check, Tag, Undo2, Lock, Search, UserPlus, FileText, ChevronDown, ChevronLeft, Link2, X, CornerDownLeft, PackagePlus, Snowflake, Sun } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
@@ -10,6 +10,7 @@ import { SectionTitle, Badge, EmptyState } from '../components/ui';
 import type { Product, DiscountGroup, Customer, Invoice, InvoiceItem, Debt, Device } from '../lib/types';
 
 type CartItem = { product_id: string; name: string; qty: number; unit_price: number; cost_price: number; line_total: number };
+type EditCartItem = { product_id: string; name: string; qty: number; unit_price: number; cost_price: number; line_total: number; orig_qty: number };
 
 export default function Drinks() {
   const { currentUser, log, requireOwnerPassword } = useStore();
@@ -18,7 +19,7 @@ export default function Drinks() {
   const [products, setProducts] = useState<Product[]>([]);
   const [discountGroups, setDiscountGroups] = useState<DiscountGroup[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
-  const [tab, setTab] = useState<'sell' | 'groups' | 'history'>('sell');
+  const [tab, setTab] = useState<'sell' | 'products' | 'groups' | 'history'>('sell');
 
   const [groupOpen, setGroupOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<DiscountGroup | null>(null);
@@ -47,13 +48,48 @@ export default function Drinks() {
   const [linkGroup, setLinkGroup] = useState<DiscountGroup | null>(null);
   const [linkPicks, setLinkPicks] = useState<Record<string, boolean>>({});
 
+  // Product CRUD state
+  const [prodFormOpen, setProdFormOpen] = useState(false);
+  const [editProduct, setEditProduct] = useState<Product | null>(null);
+  const [pName, setPName] = useState('');
+  const [pCost, setPCost] = useState('');
+  const [pSell, setPSell] = useState('');
+  const [pQty, setPQty] = useState('0');
+  const [pLow, setPLow] = useState('5');
+  const [pIcon, setPIcon] = useState('');
+
+  // Return-to-inventory state
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnProduct, setReturnProduct] = useState<Product | null>(null);
+  const [returnQty, setReturnQty] = useState('');
+  const [returnNote, setReturnNote] = useState('');
+
+  // Edit completed invoice state
+  const [editInvOpen, setEditInvOpen] = useState(false);
+  const [editingInv, setEditingInv] = useState<any | null>(null);
+  const [editCart, setEditCart] = useState<EditCartItem[]>([]);
+  const [editAddSearch, setEditAddSearch] = useState('');
+
   const loadProducts = () => setProducts(db.select<Product>('products').sort((a, b) => a.name.localeCompare(b.name, 'ar')));
   const loadGroups = () => setDiscountGroups(db.select<DiscountGroup>('discount_groups').sort((a, b) => a.name.localeCompare(b.name, 'ar')));
+  const [invSearch, setInvSearch] = useState('');
+
   const loadInvoices = () => {
-    const all = db.select<any>('invoices').sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).slice(0, 50);
+    const all = db.select<any>('invoices').sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
     const items = db.select<any>('invoice_items');
     setInvoices(all.map((inv) => ({ ...inv, items: items.filter((i) => i.invoice_id === inv.id) })));
   };
+
+  const filteredInvoices = useMemo(() => {
+    if (!invSearch.trim()) return invoices;
+    const q = invSearch.trim().toLowerCase();
+    return invoices.filter((inv) => {
+      if (inv.id.toLowerCase().includes(q)) return true;
+      if (!inv.customer_id) return 'زبون عابر'.includes(q);
+      const cust = db.first<any>('customers', (r) => r.id === inv.customer_id);
+      return (cust?.name || '').toLowerCase().includes(q) || (cust?.phone || '').toLowerCase().includes(q);
+    });
+  }, [invoices, invSearch]);
 
   useEffect(() => { loadProducts(); loadGroups(); loadInvoices(); }, []);
 
@@ -208,23 +244,7 @@ export default function Drinks() {
         db.updateById('cash_boxes', box.id, { balance: Number(box.balance) + actualPaid });
         db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'in', amount: actualPaid, reason: 'مبيعات مشروبات', related_id: inv.id, created_at: db.now() });
       }
-      // Realized profit only to profit box
-      if (realizedProfit > 0) {
-        const pBox = db.first<any>('cash_boxes', (r) => r.code === 'drinks_profit');
-        if (pBox) {
-          db.updateById('cash_boxes', pBox.id, { balance: Number(pBox.balance) + realizedProfit });
-          db.insert('cash_box_ledger', { cash_box_id: pBox.id, type: 'in', amount: realizedProfit, reason: 'أرباح مشروبات محققة', related_id: inv.id, created_at: db.now() });
-        }
-        // توزيع الربح بالتساوي على الشركاء
-        const partners = db.select<any>('partners');
-        if (partners.length > 0) {
-          const share = realizedProfit / partners.length;
-          partners.forEach((p) => {
-            db.updateById('partners', p.id, { balance: Number(p.balance) + share });
-            db.insert('partner_ledger', { partner_id: p.id, type: 'profit', amount: share, note: 'توزيع ربح مشروبات', created_at: db.now() });
-          });
-        }
-      }
+      // الربح محفوظ في metadata الفاتورة (realized_profit) للتقارير فقط — لا قيد مالي إضافي
     }
 
     if (remainingDebt > 0 && custId) {
@@ -258,13 +278,7 @@ export default function Drinks() {
           db.updateById('cash_boxes', box.id, { balance: Number(box.balance) - Number(inv.paid_amount) });
           db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'out', amount: Number(inv.paid_amount), reason: `عكس فاتورة ${inv.id.slice(0, 6)}`, related_id: inv.id, created_at: db.now() });
         }
-        if (Number(inv.realized_profit) > 0) {
-          const pBox = db.first<any>('cash_boxes', (r) => r.code === 'drinks_profit');
-          if (pBox) {
-            db.updateById('cash_boxes', pBox.id, { balance: Number(pBox.balance) - Number(inv.realized_profit) });
-            db.insert('cash_box_ledger', { cash_box_id: pBox.id, type: 'out', amount: Number(inv.realized_profit), reason: 'عكس أرباح', related_id: inv.id, created_at: db.now() });
-          }
-        }
+        // drinks_profit لم يعد يُسجَّل كقيد مالي — لا حاجة لعكسه
       }
       // Reverse debt
       const debt = db.first<any>('debts', (r) => r.related_invoice_id === inv.id);
@@ -346,14 +360,256 @@ export default function Drinks() {
 
   const groupName = (id: string | null) => discountGroups.find((g) => g.id === id)?.name || null;
 
+  // ===== Product CRUD helpers =====
+  const openProdForm = (p?: Product) => {
+    if (p) {
+      setEditProduct(p); setPName(p.name); setPCost(String(p.cost_price)); setPSell(String(p.sell_price));
+      setPQty(String(p.quantity)); setPLow(String(p.low_stock_threshold)); setPIcon(p.icon || '');
+    } else {
+      setEditProduct(null); setPName(''); setPCost(''); setPSell(''); setPQty('0'); setPLow('5'); setPIcon('');
+    }
+    setProdFormOpen(true);
+  };
+
+  const saveProduct = () => {
+    if (!pName.trim()) { push('أدخل اسم الصنف', 'error'); return; }
+    const payload = {
+      name: pName.trim(),
+      cost_price: Number(pCost) || 0,
+      sell_price: Number(pSell) || 0,
+      quantity: Number(pQty) || 0,
+      low_stock_threshold: Number(pLow) || 5,
+      icon: pIcon.trim() || null,
+      is_active: editProduct ? (editProduct.is_active ?? true) : true,
+    };
+    if (editProduct) {
+      db.updateById('products', editProduct.id, payload);
+      log('edit_product', 'products', editProduct.id, pName.trim());
+      push('تم تعديل الصنف', 'success');
+    } else {
+      const created = db.insert('products', { ...payload, supplier_id: null, discount_group_id: null, created_at: db.now() });
+      log('add_product', 'products', created.id, pName.trim());
+      push('تمت إضافة الصنف', 'success');
+    }
+    setProdFormOpen(false); setEditProduct(null);
+    loadProducts();
+  };
+
+  const toggleProductActive = (p: Product) => {
+    const isActive = p.is_active !== false;
+    db.updateById('products', p.id, { is_active: !isActive });
+    log('toggle_product_active', 'products', p.id, String(!isActive));
+    push(isActive ? 'تم تجميد الصنف' : 'تم تفعيل الصنف', 'success');
+    loadProducts();
+  };
+
+  const deleteProduct = (p: Product) => {
+    if (!window.confirm(`هل أنت متأكد من حذف "${p.name}"؟`)) return;
+    db.removeById('products', p.id);
+    log('delete_product', 'products', p.id, p.name);
+    push('تم حذف الصنف', 'success');
+    loadProducts();
+  };
+
+  // ===== Return to inventory =====
+  const openReturn = (p: Product) => {
+    setReturnProduct(p); setReturnQty(''); setReturnNote(''); setReturnOpen(true);
+  };
+
+  const submitReturn = () => {
+    if (!returnProduct) return;
+    const qty = Number(returnQty);
+    if (!qty || qty <= 0) { push('أدخل كمية صحيحة', 'error'); return; }
+    if (qty > Number(returnProduct.quantity)) {
+      push(`الكمية المطلوبة (${qty}) أكبر من المتاح (${returnProduct.quantity})`, 'error'); return;
+    }
+
+    // 1. Deduct from drinks product
+    db.updateById('products', returnProduct.id, { quantity: Number(returnProduct.quantity) - qty });
+
+    // 2. Find or create matching inventory item by name
+    const invItem = db.first<any>('inventory_items', (r: any) =>
+      r.name.trim().toLowerCase() === returnProduct.name.trim().toLowerCase()
+    );
+    let targetId: string;
+    if (invItem) {
+      db.updateById('inventory_items', invItem.id, { quantity: Number(invItem.quantity) + qty });
+      targetId = invItem.id;
+    } else {
+      const newItem = db.insert('inventory_items', {
+        name: returnProduct.name,
+        quantity: qty,
+        cost_price: Number(returnProduct.cost_price),
+        sell_price: Number(returnProduct.sell_price),
+        low_stock_threshold: Number(returnProduct.low_stock_threshold) || 5,
+        supplier_id: null,
+        icon: returnProduct.icon || null,
+        discount_group_id: null,
+        created_at: db.now(),
+      });
+      targetId = newItem.id;
+    }
+
+    // 3. Audit log — inventory_moves
+    db.insert('inventory_moves', {
+      inventory_item_id: targetId,
+      type: 'return_from_drinks',
+      qty,
+      note: returnNote.trim() || `إرجاع من المشروبات — ${returnProduct.name}`,
+      created_at: db.now(),
+    });
+
+    // 4. Operation log
+    log('return_to_inventory', 'products', returnProduct.id, String(qty));
+    push(`تم إرجاع ${qty} من "${returnProduct.name}" للمخزن الرئيسي`, 'success');
+    setReturnOpen(false); setReturnProduct(null); setReturnQty(''); setReturnNote('');
+    loadProducts();
+  };
+
+  // ===== Edit completed invoice =====
+  const openEditInvoice = (inv: any) => {
+    const items = db.select<any>('invoice_items').filter((i: any) => i.invoice_id === inv.id);
+    setEditCart(items.map((it: any) => ({
+      product_id: it.product_id,
+      name: it.name,
+      qty: Number(it.qty),
+      unit_price: Number(it.unit_price),
+      cost_price: Number(it.cost_price),
+      line_total: Number(it.line_total),
+      orig_qty: Number(it.qty),
+    })));
+    setEditingInv(inv);
+    setEditAddSearch('');
+    setEditInvOpen(true);
+  };
+
+  const editUpdateQty = (pid: string, delta: number) =>
+    setEditCart((c) => c.map((i) => {
+      if (i.product_id !== pid) return i;
+      const newQty = Math.max(1, i.qty + delta);
+      return { ...i, qty: newQty, line_total: newQty * i.unit_price };
+    }));
+
+  const editRemoveItem = (pid: string) => setEditCart((c) => c.filter((i) => i.product_id !== pid));
+
+  const editAddProduct = (p: Product) =>
+    setEditCart((c) => {
+      const existing = c.find((i) => i.product_id === p.id);
+      if (existing) {
+        const newQty = existing.qty + 1;
+        return c.map((i) => i.product_id === p.id
+          ? { ...i, qty: newQty, line_total: newQty * i.unit_price }
+          : i);
+      }
+      return [...c, {
+        product_id: p.id, name: p.name, qty: 1,
+        unit_price: Number(p.sell_price), cost_price: Number(p.cost_price),
+        line_total: Number(p.sell_price), orig_qty: 0,
+      }];
+    });
+
+  const saveEditedInvoice = () => {
+    if (!editingInv) return;
+    if (editCart.length === 0) { push('لا يمكن حفظ فاتورة فارغة', 'error'); return; }
+
+    const oldTotal = Number(editingInv.total);
+    const origDiscountAmount = Number(editingInv.discount_amount || 0);
+
+    // 1. استعادة مخزون الأصناف الأصلية
+    const origItems = db.select<any>('invoice_items').filter((i: any) => i.invoice_id === editingInv.id);
+    origItems.forEach((it: any) => {
+      const prod = db.first<any>('products', (r: any) => r.id === it.product_id);
+      if (prod) db.updateById('products', prod.id, { quantity: Number(prod.quantity) + Number(it.qty) });
+    });
+
+    // 2. حذف invoice_items القديمة
+    db.remove('invoice_items', (i: any) => i.invoice_id === editingInv.id);
+
+    // 3. إدراج الجديدة + خصم مخزون الأصناف الجديدة
+    let newSubtotal = 0;
+    let newProfit = 0;
+    editCart.forEach((item) => {
+      const lt = item.qty * item.unit_price;
+      newSubtotal += lt;
+      newProfit += (item.unit_price - item.cost_price) * item.qty;
+      db.insert('invoice_items', {
+        invoice_id: editingInv.id,
+        product_id: item.product_id,
+        name: item.name,
+        qty: item.qty,
+        unit_price: item.unit_price,
+        cost_price: item.cost_price,
+        line_total: lt,
+      });
+      const prod = db.first<any>('products', (r: any) => r.id === item.product_id);
+      if (prod) db.updateById('products', prod.id, { quantity: Math.max(0, Number(prod.quantity) - item.qty) });
+    });
+
+    const newTotal = Math.max(0, newSubtotal - origDiscountAmount);
+    const diff = newTotal - oldTotal;
+    const oldPaidAmount = Number(editingInv.paid_amount || 0);
+    const newPaid = oldPaidAmount >= newTotal;
+    const newRealizedProfit = newTotal > 0 ? (Math.min(oldPaidAmount, newTotal) / newTotal) * newProfit : 0;
+
+    // 4. تحديث سجل الفاتورة
+    db.updateById('invoices', editingInv.id, {
+      subtotal: newSubtotal,
+      total: newTotal,
+      profit: newProfit,
+      realized_profit: newRealizedProfit,
+      paid: newPaid,
+    });
+
+    // 5. قيد الفرق في حساب الزبون (مدين/دائن)
+    if (diff !== 0 && editingInv.customer_id) {
+      const custDebts = db.select<any>('debts')
+        .filter((d: any) => d.customer_id === editingInv.customer_id && !d.reversed)
+        .sort((a: any, b: any) => (a.created_at || '').localeCompare(b.created_at || ''));
+      const prevBalance = custDebts.length ? Number(custDebts[custDebts.length - 1].balance_after) : 0;
+      const isDebit = diff > 0;
+      db.insert('debts', {
+        customer_id: editingInv.customer_id,
+        type: 'drinks',
+        description: isDebit ? 'تعديل فاتورة — فرق إضافي' : 'تعديل فاتورة — رد مبلغ',
+        debit: isDebit ? diff : 0,
+        credit: isDebit ? 0 : Math.abs(diff),
+        balance_after: prevBalance + (isDebit ? diff : -Math.abs(diff)),
+        related_invoice_id: editingInv.id,
+        reversed: false,
+        created_at: db.now(),
+      });
+    }
+
+    // 6. تعديل صندوق الكاش للفواتير المدفوعة نقداً
+    if (diff !== 0 && editingInv.paid) {
+      const box = db.first<any>('cash_boxes', (r: any) => r.code === 'drinks');
+      if (box) {
+        db.updateById('cash_boxes', box.id, { balance: Math.max(0, Number(box.balance) + diff) });
+        db.insert('cash_box_ledger', {
+          cash_box_id: box.id,
+          type: diff > 0 ? 'in' : 'out',
+          amount: Math.abs(diff),
+          reason: `تعديل فاتورة مشروبات`,
+          related_id: editingInv.id,
+          created_at: db.now(),
+        });
+      }
+    }
+
+    log('edit_invoice', 'invoices', editingInv.id, `diff:${diff}`);
+    push(`تم تعديل الفاتورة${diff !== 0 ? ` — الفرق: ${diff > 0 ? '+' : ''}${money(diff)}` : ''}`, 'success');
+    setEditInvOpen(false); setEditingInv(null); setEditCart([]);
+    loadProducts(); loadInvoices();
+  };
+
   return (
     <div className="space-y-5 animate-fade">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <SectionTitle icon={<CupSoda size={24} />}>قسم المشروبات والمبيعات</SectionTitle>
         <div className="flex gap-2 flex-wrap">
-          {(['sell', 'groups', 'history'] as const).map((t) => (
+          {(['sell', 'products', 'groups', 'history'] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)} className={`px-3.5 py-2 rounded-xl text-sm font-bold transition ${tab === t ? 'bg-sky-600 text-white dark:bg-sky-500' : 'bg-white text-slate-600 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'}`}>
-              {t === 'sell' ? 'بيع' : t === 'groups' ? 'مجموعات الخصم' : 'الفواتير'}
+              {t === 'sell' ? 'بيع' : t === 'products' ? 'إدارة الأصناف' : t === 'groups' ? 'مجموعات الخصم' : 'الفواتير'}
             </button>
           ))}
         </div>
@@ -365,19 +621,19 @@ export default function Drinks() {
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold text-slate-700 dark:text-slate-200">الأصناف</h3>
             </div>
-            {products.length === 0 ? (
-              <EmptyState icon={<Package size={36} />} title="لا توجد منتجات" subtitle="أضف منتجات من قسم الإدارة." />
+            {products.filter((p) => p.is_active !== false).length === 0 ? (
+              <EmptyState icon={<Package size={36} />} title="لا توجد منتجات نشطة" subtitle="أضف أصنافاً من تبويب «إدارة الأصناف»." />
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                {products.map((p) => (
-                  <button key={p.id} onClick={() => addToCart(p)} className="card p-3 text-right hover:shadow-md hover:border-sky-300 transition active:scale-95 dark:bg-slate-800 dark:border-slate-700">
-                    <div className="flex items-center gap-1.5">
+                {products.filter((p) => p.is_active !== false).map((p) => (
+                  <div key={p.id} className="card p-3 text-right hover:shadow-md hover:border-sky-300 transition dark:bg-slate-800 dark:border-slate-700 flex flex-col gap-1">
+                    <button onClick={() => addToCart(p)} className="flex items-center gap-1.5 active:scale-95 transition flex-1 w-full">
                       <span className="text-xl">{p.icon || '📦'}</span>
                       <p className="font-bold text-slate-700 truncate flex-1 dark:text-slate-200">{p.name}</p>
-                    </div>
-                    <p className="text-sky-600 font-extrabold mt-1">{money(p.sell_price)}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">المخزون: {p.quantity}</p>
-                  </button>
+                    </button>
+                    <p className="text-sky-600 font-extrabold">{money(p.sell_price)}</p>
+                    <p className="text-xs text-slate-400">المخزون: {p.quantity}</p>
+                  </div>
                 ))}
               </div>
             )}
@@ -428,6 +684,74 @@ export default function Drinks() {
         </div>
       )}
 
+      {tab === 'products' && (
+        <div className="card overflow-hidden dark:bg-slate-900">
+          <div className="flex items-center justify-between p-4 border-b border-slate-100 dark:border-slate-700">
+            <h3 className="font-bold text-slate-700 dark:text-slate-200">إدارة أصناف المشروبات</h3>
+            <button onClick={() => openProdForm()} className="btn-primary text-sm flex items-center gap-1.5"><PackagePlus size={16} /> صنف جديد</button>
+          </div>
+          {products.length === 0 ? (
+            <EmptyState icon={<Package size={36} />} title="لا توجد أصناف" subtitle="أضف أول صنف لبدء البيع." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-500 text-xs dark:bg-slate-800 dark:text-slate-400">
+                  <tr>
+                    <th className="text-right px-4 py-3 font-bold">الصنف</th>
+                    <th className="text-right px-4 py-3 font-bold">سعر التكلفة</th>
+                    <th className="text-right px-4 py-3 font-bold">سعر البيع</th>
+                    <th className="text-right px-4 py-3 font-bold">الكمية</th>
+                    <th className="text-right px-4 py-3 font-bold">الحد الأدنى</th>
+                    <th className="text-right px-4 py-3 font-bold">الحالة</th>
+                    <th className="text-right px-4 py-3 font-bold">إجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                  {products.map((p) => {
+                    const isActive = p.is_active !== false;
+                    const lowStock = Number(p.quantity) <= Number(p.low_stock_threshold);
+                    return (
+                      <tr key={p.id} className={`table-row dark:bg-slate-900 ${!isActive ? 'opacity-50' : ''}`}>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">{p.icon || '📦'}</span>
+                            <span className="font-semibold dark:text-slate-200">{p.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 dark:text-slate-300">{money(p.cost_price)}</td>
+                        <td className="px-4 py-3 font-bold text-sky-600">{money(p.sell_price)}</td>
+                        <td className="px-4 py-3">
+                          <span className={`font-bold ${lowStock ? 'text-rose-600' : 'dark:text-slate-200'}`}>{p.quantity}</span>
+                          {lowStock && <span className="text-xs text-rose-500 mr-1">(منخفض)</span>}
+                        </td>
+                        <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{p.low_stock_threshold}</td>
+                        <td className="px-4 py-3">
+                          <button onClick={() => toggleProductActive(p)} title={isActive ? 'تجميد الصنف' : 'تفعيل الصنف'}>
+                            {isActive
+                              ? <Badge color="emerald">نشط</Badge>
+                              : <Badge color="slate">مجمّد</Badge>}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1 flex-wrap">
+                            <button onClick={() => openReturn(p)} disabled={Number(p.quantity) === 0} className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-40" title="إرجاع للمخزن"><CornerDownLeft size={16} /></button>
+                            <button onClick={() => openProdForm(p)} className="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/30" title="تعديل"><Pencil size={16} /></button>
+                            <button onClick={() => toggleProductActive(p)} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" title={isActive ? 'تجميد' : 'تفعيل'}>
+                              {isActive ? <Snowflake size={16} /> : <Sun size={16} />}
+                            </button>
+                            <button onClick={() => deleteProduct(p)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="حذف"><Trash2 size={16} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {tab === 'groups' && (
         <div className="card overflow-hidden dark:bg-slate-900">
           <div className="flex items-center justify-between p-4 border-b border-slate-100 dark:border-slate-700">
@@ -475,8 +799,23 @@ export default function Drinks() {
 
       {tab === 'history' && (
         <div className="card overflow-hidden dark:bg-slate-900">
-          {invoices.length === 0 ? (
-            <EmptyState icon={<CupSoda size={36} />} title="لا توجد فواتير" />
+          {/* حقل البحث الذكي */}
+          <div className="p-3 border-b border-slate-100 dark:border-slate-700">
+            <div className="relative">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                className="input pr-10 text-sm"
+                placeholder="بحث بالاسم أو الهاتف أو رقم الفاتورة..."
+                value={invSearch}
+                onChange={(e) => setInvSearch(e.target.value)}
+              />
+            </div>
+            {invSearch.trim() && (
+              <p className="text-xs text-slate-400 mt-1.5">{filteredInvoices.length} نتيجة من أصل {invoices.length} فاتورة</p>
+            )}
+          </div>
+          {filteredInvoices.length === 0 ? (
+            <EmptyState icon={<CupSoda size={36} />} title={invSearch.trim() ? 'لا توجد نتائج للبحث' : 'لا توجد فواتير'} />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -493,7 +832,7 @@ export default function Drinks() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                  {invoices.map((inv) => {
+                  {filteredInvoices.map((inv) => {
                     const cust = inv.customer_id ? db.first<any>('customers', (r) => r.id === inv.customer_id) : null;
                     const items = db.select<any>('invoice_items').filter((i) => i.invoice_id === inv.id);
                     const isOpen = expandedInv === inv.id;
@@ -523,7 +862,10 @@ export default function Drinks() {
                           </td>
                           <td className="px-4 py-3">
                             {!inv.reversed && (
-                              <button onClick={() => reverseInvoice(inv)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="عكس الفاتورة"><Undo2 size={16} /></button>
+                              <div className="flex gap-1">
+                                <button onClick={() => openEditInvoice(inv)} className="p-1.5 rounded-lg text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-900/30" title="تعديل الفاتورة"><Pencil size={16} /></button>
+                                <button onClick={() => reverseInvoice(inv)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="عكس الفاتورة"><Undo2 size={16} /></button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -768,6 +1110,185 @@ export default function Drinks() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Product form modal (add / edit) */}
+      <Modal open={prodFormOpen} onClose={() => setProdFormOpen(false)} title={editProduct ? 'تعديل الصنف' : 'إضافة صنف جديد'} size="md">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2">
+            <label className="label">اسم الصنف *</label>
+            <input className="input" value={pName} onChange={(e) => setPName(e.target.value)} autoFocus placeholder="مثال: بيبسي، ماء، عصير..." />
+          </div>
+          <div>
+            <label className="label">سعر التكلفة</label>
+            <input className="input" type="number" min="0" value={pCost} onChange={(e) => setPCost(e.target.value)} placeholder="0" />
+          </div>
+          <div>
+            <label className="label">سعر البيع</label>
+            <input className="input" type="number" min="0" value={pSell} onChange={(e) => setPSell(e.target.value)} placeholder="0" />
+          </div>
+          <div>
+            <label className="label">الكمية الحالية</label>
+            <input className="input" type="number" min="0" value={pQty} onChange={(e) => setPQty(e.target.value)} placeholder="0" />
+          </div>
+          <div>
+            <label className="label">الحد الأدنى للتنبيه</label>
+            <input className="input" type="number" min="0" value={pLow} onChange={(e) => setPLow(e.target.value)} placeholder="5" />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="label">أيقونة (إيموجي اختياري)</label>
+            <input className="input" value={pIcon} onChange={(e) => setPIcon(e.target.value)} placeholder="مثال: 🥤 🧃 💧" maxLength={4} />
+          </div>
+        </div>
+        <div className="flex gap-2 justify-end mt-5">
+          <button onClick={() => setProdFormOpen(false)} className="btn-ghost">إلغاء</button>
+          <button onClick={saveProduct} className="btn-primary"><Check size={18} /> حفظ</button>
+        </div>
+      </Modal>
+
+      {/* Return to inventory modal */}
+      <Modal open={returnOpen} onClose={() => setReturnOpen(false)} title="إرجاع كمية للمخزن الرئيسي" size="sm">
+        {returnProduct && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-700">
+              <span className="text-2xl">{returnProduct.icon || '📦'}</span>
+              <div>
+                <p className="font-bold text-slate-700 dark:text-slate-200">{returnProduct.name}</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400">المخزون المتاح: <span className="font-bold text-slate-700 dark:text-slate-200">{returnProduct.quantity}</span></p>
+              </div>
+            </div>
+            <div>
+              <label className="label">الكمية المراد إرجاعها *</label>
+              <input
+                className="input text-xl font-bold"
+                type="number"
+                min="1"
+                max={Number(returnProduct.quantity)}
+                value={returnQty}
+                onChange={(e) => setReturnQty(e.target.value)}
+                placeholder="0"
+                autoFocus
+              />
+              {Number(returnQty) > Number(returnProduct.quantity) && (
+                <p className="text-xs text-rose-600 mt-1 font-semibold">⚠ تجاوز الكمية المتاحة ({returnProduct.quantity})</p>
+              )}
+            </div>
+            <div>
+              <label className="label">السبب / ملاحظة (اختياري)</label>
+              <input className="input" value={returnNote} onChange={(e) => setReturnNote(e.target.value)} placeholder="مثال: بضاعة زائدة، تالفة..." />
+            </div>
+          </div>
+        )}
+        <div className="flex gap-2 justify-end mt-5">
+          <button onClick={() => setReturnOpen(false)} className="btn-ghost">إلغاء</button>
+          <button onClick={submitReturn} className="btn-primary flex items-center gap-1.5"><CornerDownLeft size={18} /> إرجاع للمخزن</button>
+        </div>
+      </Modal>
+
+      {/* تعديل فاتورة مكتملة */}
+      <Modal open={editInvOpen} onClose={() => { setEditInvOpen(false); setEditingInv(null); setEditCart([]); }} title="تعديل الفاتورة" size="xl">
+        {editingInv && (() => {
+          const newSubtotal = editCart.reduce((s, i) => s + i.line_total, 0);
+          const newTotal = Math.max(0, newSubtotal - Number(editingInv.discount_amount || 0));
+          const oldTotal = Number(editingInv.total);
+          const diff = newTotal - oldTotal;
+          const custObj = editingInv.customer_id ? db.first<any>('customers', (r: any) => r.id === editingInv.customer_id) : null;
+          const filteredProducts = products.filter((p) => p.is_active !== false && (!editAddSearch.trim() || p.name.includes(editAddSearch.trim())));
+          return (
+            <div className="flex flex-col gap-4">
+              {/* info bar */}
+              <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800 text-sm">
+                <span className="font-semibold dark:text-slate-200">الزبون: <span className="text-sky-600">{custObj?.name || 'زبون عابر'}</span></span>
+                <span className="text-slate-400">|</span>
+                <span className="dark:text-slate-300">الحالة: <span className={`font-bold ${editingInv.paid ? 'text-emerald-600' : 'text-amber-600'}`}>{editingInv.paid ? 'مدفوع' : 'آجل'}</span></span>
+                {Number(editingInv.discount_amount) > 0 && (
+                  <span className="text-amber-600 text-xs font-semibold">⚠ الخصم الأصلي ({money(editingInv.discount_amount)}) مُطبَّق على الإجمالي الجديد</span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                {/* إضافة أصناف جديدة */}
+                <div className="lg:col-span-2 space-y-2">
+                  <h4 className="font-bold text-sm text-slate-600 dark:text-slate-300">إضافة أصناف</h4>
+                  <div className="relative">
+                    <input className="input pr-8 py-1.5 text-sm" placeholder="بحث صنف..." value={editAddSearch} onChange={(e) => setEditAddSearch(e.target.value)} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+                    {filteredProducts.map((p) => (
+                      <button key={p.id} onClick={() => editAddProduct(p)} className="card p-2 text-right hover:border-sky-300 transition dark:bg-slate-800 dark:border-slate-700 dark:hover:border-sky-500">
+                        <div className="flex items-center gap-1">
+                          <span className="text-base">{p.icon || '📦'}</span>
+                          <span className="font-bold text-xs truncate flex-1 dark:text-slate-200">{p.name}</span>
+                        </div>
+                        <p className="text-sky-600 font-bold text-xs mt-0.5">{money(p.sell_price)}</p>
+                        <p className="text-slate-400 text-xs">مخزون: {p.quantity}</p>
+                      </button>
+                    ))}
+                    {filteredProducts.length === 0 && <p className="text-xs text-slate-400 col-span-2 text-center py-3">لا توجد أصناف</p>}
+                  </div>
+                </div>
+
+                {/* الأصناف المعدَّلة */}
+                <div className="lg:col-span-3 space-y-2">
+                  <h4 className="font-bold text-sm text-slate-600 dark:text-slate-300">الأصناف في الفاتورة</h4>
+                  {editCart.length === 0 ? (
+                    <p className="text-sm text-slate-400 text-center py-6">لا توجد أصناف — أضف من القائمة</p>
+                  ) : (
+                    <div className="space-y-2 max-h-60 overflow-y-auto pl-1">
+                      {editCart.map((item) => (
+                        <div key={item.product_id} className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/80">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-sm dark:text-slate-200 truncate">{item.name}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">{money(item.unit_price)} × {item.qty} = <span className="font-bold">{money(item.line_total)}</span></p>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => editUpdateQty(item.product_id, -1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 dark:bg-slate-700 dark:border-slate-600 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50">−</button>
+                            <span className="w-6 text-center font-bold text-sm dark:text-slate-200">{item.qty}</span>
+                            <button onClick={() => editUpdateQty(item.product_id, 1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 dark:bg-slate-700 dark:border-slate-600 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50">+</button>
+                            <button onClick={() => editRemoveItem(item.product_id)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="حذف"><Trash2 size={14} /></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* ملخص الفروقات */}
+                  <div className="mt-3 space-y-1.5 border-t border-slate-200 dark:border-slate-700 pt-3">
+                    <div className="flex justify-between text-sm text-slate-500 dark:text-slate-400">
+                      <span>الإجمالي القديم</span>
+                      <span className="line-through">{money(oldTotal)}</span>
+                    </div>
+                    <div className="flex justify-between font-bold dark:text-slate-100">
+                      <span>الإجمالي الجديد</span>
+                      <span>{money(newTotal)}</span>
+                    </div>
+                    {diff === 0 && (
+                      <div className="flex justify-between text-sm text-slate-400 dark:text-slate-500 font-semibold px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800">
+                        <span>لا يوجد فرق</span><span>—</span>
+                      </div>
+                    )}
+                    {diff !== 0 && (
+                      <div className={`flex justify-between font-bold text-sm px-3 py-2 rounded-xl ${diff > 0 ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
+                        <span>{diff > 0 ? '↑ فرق إضافي على الزبون' : '↓ رد مبلغ للزبون'}</span>
+                        <span className="font-extrabold">{diff > 0 ? '+' : ''}{money(diff)}</span>
+                      </div>
+                    )}
+                    {diff !== 0 && custObj && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 text-center">سيُسجَّل قيد <b>{diff > 0 ? 'مدين' : 'دائن'}</b> في حساب الزبون تلقائياً</p>
+                    )}
+                    {diff !== 0 && editingInv.paid && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 text-center">سيُعدَّل صندوق كاش المشروبات بمقدار الفرق</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+        <div className="flex gap-2 justify-end mt-5">
+          <button onClick={() => { setEditInvOpen(false); setEditingInv(null); setEditCart([]); }} className="btn-ghost">إلغاء</button>
+          <button onClick={saveEditedInvoice} className="btn-primary"><Check size={18} /> حفظ التعديلات</button>
+        </div>
       </Modal>
 
       {/* Link items to group modal */}

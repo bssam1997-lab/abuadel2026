@@ -23,16 +23,15 @@ export default function Modal({ open, onClose, title, children, size = 'md' }: P
   const [zIndex, setZIndex] = useState(50);
 
   useEffect(() => {
-    if (open) {
-      modalStack += 10;
-      const z = 50 + modalStack;
-      setZIndex(z);
-      document.body.style.overflow = 'hidden';
-      return () => {
-        modalStack = Math.max(0, modalStack - 10);
-        if (modalStack === 0) document.body.style.overflow = '';
-      };
-    }
+    if (!open) return;
+    modalStack += 10;
+    const z = 50 + modalStack;
+    setZIndex(z);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      modalStack = Math.max(0, modalStack - 10);
+      if (modalStack === 0) document.body.style.overflow = '';
+    };
   }, [open]);
 
   if (!open) return null;

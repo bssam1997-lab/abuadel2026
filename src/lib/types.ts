@@ -1,4 +1,5 @@
 export type AppUser = {
+  page_permissions?: string; // JSON string of allowed Page IDs for employees
   id: string;
   name: string;
   role: 'owner' | 'employee';
@@ -39,6 +40,7 @@ export type Product = {
   supplier_id: string | null;
   icon: string | null;
   discount_group_id: string | null;
+  is_active?: boolean;
   created_at: string;
 };
 

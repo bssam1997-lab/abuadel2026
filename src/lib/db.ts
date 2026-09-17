@@ -1,8 +1,7 @@
 // ============================================================
 // نظام نقطة شحن أبو عادل — طبقة قاعدة البيانات المحلية
-// IndexedDB-backed offline database via localforage (no external services)
+// LocalStorage-based offline database (no external services)
 // ============================================================
-import { getItem, setItem } from '../utils/storage';
 
 // كل الجداول في النظام
 export type TableName =
@@ -43,7 +42,7 @@ const tableKey = (t: TableName) => `${STORAGE_PREFIX}${t}`;
 // قراءة جدول كامل من LocalStorage
 function readTable<T = any>(t: TableName): T[] {
   try {
-    const raw = getItem(tableKey(t));
+    const raw = localStorage.getItem(tableKey(t));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -52,7 +51,7 @@ function readTable<T = any>(t: TableName): T[] {
 
 // كتابة جدول كامل إلى LocalStorage
 function writeTable<T = any>(t: TableName, rows: T[]): void {
-  setItem(tableKey(t), JSON.stringify(rows));
+  localStorage.setItem(tableKey(t), JSON.stringify(rows));
 }
 
 // توليد معرف فريد
@@ -178,6 +177,7 @@ export function initDatabase(): void {
   const defaultSettings: Record<string, string> = {
     debt_lock_pin: '',
     daily_savings_per_partner: '10',
+    savings_enabled: '1',
     shop_name: 'نظام نقطة شحن أبو عادل',
     owner_password: '',
     orientation: 'portrait',
@@ -186,15 +186,23 @@ export function initDatabase(): void {
     if (!getSetting(k)) setSetting(k, v);
   }
 
-  // الصناديق الافتراضية (تم حذف: ديون اليوم، أرباح المشروبات للسحب، حصالة الشركاء)
+  // الصناديق الافتراضية
   const boxes = readTable('cash_boxes');
   if (boxes.length === 0) {
     const defaults = [
       { code: 'charging', name: 'صندوق كاش الشحن', balance: 0 },
       { code: 'drinks', name: 'صندوق كاش المشروبات', balance: 0 },
       { code: 'drinks_profit', name: 'صندوق أرباح المشروبات', balance: 0 },
+      { code: 'partner_fund', name: 'صندوق حساب الشركاء', balance: 0 },
+      { code: 'partner_piggy', name: 'حصالة الشركاء', balance: 0 },
     ];
     for (const b of defaults) insert('cash_boxes', b);
+  } else {
+    // هجرة: أضف صندوق الشركاء للأنظمة القائمة إن لم يكن موجوداً
+    const hasPartnerFund = boxes.some((b: any) => b.code === 'partner_fund');
+    if (!hasPartnerFund) insert('cash_boxes', { code: 'partner_fund', name: 'صندوق حساب الشركاء', balance: 0 });
+    const hasPartnerPiggy = boxes.some((b: any) => b.code === 'partner_piggy');
+    if (!hasPartnerPiggy) insert('cash_boxes', { code: 'partner_piggy', name: 'حصالة الشركاء', balance: 0 });
   }
 
   // أنواع الأجهزة الافتراضية
@@ -229,6 +237,45 @@ export function initDatabase(): void {
     ];
     for (const a of defaultAccs) insert('accessories', a);
   }
+}
+
+// ============================================================
+// مساعدات صناديق الشركاء — مزامنة لحظية
+// ============================================================
+
+/** مزامنة رصيد "صندوق الشركاء" = مجموع أرصدة الشركاء */
+export function syncPartnerFundBox(): void {
+  const partners = readTable<any>('partners');
+  const totalBal = partners.reduce((s: number, p: any) => s + Number(p.balance), 0);
+  const box = readTable<any>('cash_boxes').find((b: any) => b.code === 'partner_fund');
+  if (box) updateById('cash_boxes', box.id, { balance: totalBal });
+}
+
+/** إضافة مبلغ لـ "حصالة الشركاء" مع تسجيل حركة */
+export function creditPartnerPiggy(amount: number, reason: string): void {
+  const box = readTable<any>('cash_boxes').find((b: any) => b.code === 'partner_piggy');
+  if (!box) return;
+  updateById('cash_boxes', box.id, { balance: Number(box.balance) + amount });
+  insert('cash_box_ledger', { cash_box_id: box.id, type: 'in', amount, reason, created_at: now() });
+}
+
+/** خصم مبلغ من "حصالة الشركاء" مع تسجيل حركة */
+export function debitPartnerPiggy(amount: number, reason: string): void {
+  const box = readTable<any>('cash_boxes').find((b: any) => b.code === 'partner_piggy');
+  if (!box) return;
+  const newBal = Math.max(0, Number(box.balance) - amount);
+  updateById('cash_boxes', box.id, { balance: newBal });
+  insert('cash_box_ledger', { cash_box_id: box.id, type: 'out', amount, reason, created_at: now() });
+}
+
+/** تصفير رصيد حصالة الشركاء */
+export function resetPartnerPiggy(reason: string): void {
+  const box = readTable<any>('cash_boxes').find((b: any) => b.code === 'partner_piggy');
+  if (!box) return;
+  const bal = Number(box.balance);
+  if (bal === 0) return;
+  updateById('cash_boxes', box.id, { balance: 0 });
+  insert('cash_box_ledger', { cash_box_id: box.id, type: 'out', amount: bal, reason: reason || 'تصفير الحصالة', created_at: now() });
 }
 
 // ============================================================

@@ -1,16 +1,15 @@
 import { useEffect, useState, useMemo } from 'react';
 import {
-  TrendingUp, BatteryCharging, CupSoda, Wallet, AlertTriangle, Users,
-  Smartphone, UserCheck, Boxes, X, ArrowDownCircle, ArrowUpCircle, ScrollText, Coins
+  TrendingUp, Boxes, ArrowDownCircle, ArrowUpCircle, ScrollText, Coins, Wallet, UserCheck
 } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
-import { money, num, periodRange, fmtDateTime, todayISO } from '../lib/format';
+import { money, periodRange, fmtDateTime, todayISO } from '../lib/format';
 import { Stat, SectionTitle, Badge, EmptyState } from '../components/ui';
 import Modal from '../components/Modal';
 
 // صناديق نشطة فقط (استبعاد المحذوفة: daily_debts, drinks_profit_partner, savings)
-const ACTIVE_BOX_CODES = ['charging', 'drinks', 'drinks_profit'];
+const ACTIVE_BOX_CODES = ['charging', 'drinks'];
 const HIDDEN_BOX_CODES = ['daily_debts', 'drinks_profit_partner', 'savings'];
 
 // شارة كل صندوق: لون + تسمية مختصرة
@@ -145,31 +144,25 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-        <Stat label="إجمالي المبيعات" value={money(data.totalSales)} color="sky" icon={<TrendingUp size={18} className="text-sky-500" />} />
-        <button onClick={() => setPopup({ title: 'تفاصيل أرباح الشحن', rows: [
-          { label: 'إجمالي الإيرادات', value: money(data.chargingRevenue), color: 'text-sky-600' },
-          { label: 'المسدد (نقدًا)', value: money(data.chargingPaid), color: 'text-emerald-600' },
-          { label: 'الآجل (دين)', value: money(data.chargingCredit), color: 'text-rose-600' },
-          { label: 'الأرباح', value: money(data.chargingProfit), color: 'text-emerald-700' },
-        ] })} className="text-right">
-          <Stat label="أرباح الشحن" value={money(data.chargingProfit)} color="emerald" icon={<BatteryCharging size={18} className="text-emerald-500" />} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <button onClick={() => setPopup({ title: 'تفاصيل إجمالي المبيعات', rows: [
+          { label: 'واردات الشحن المدفوعة (نقدًا)', value: money(data.chargingPaid), color: 'text-emerald-600' },
+          { label: 'واردات الشحن الآجلة (دين)', value: money(data.chargingCredit), color: 'text-rose-600' },
+          { label: 'إجمالي إيرادات الشحن', value: money(data.chargingRevenue), color: 'text-sky-700 font-bold' },
+          { label: 'مبيعات المشروبات المدفوعة', value: money(data.drinksPaid), color: 'text-emerald-600' },
+          { label: 'مبيعات المشروبات الآجلة (دين)', value: money(data.drinksCredit), color: 'text-rose-600' },
+          { label: 'إجمالي إيرادات المشروبات', value: money(data.drinksRevenue), color: 'text-amber-700 font-bold' },
+          { label: 'إجمالي المبيعات الكلي', value: money(data.totalSales), color: 'text-sky-800 font-extrabold' },
+        ] })} className="text-right w-full">
+          <Stat label="إجمالي المبيعات" value={money(data.totalSales)} color="sky" icon={<TrendingUp size={18} className="text-sky-500" />} />
         </button>
-        <button onClick={() => setPopup({ title: 'تفاصيل أرباح المشروبات', rows: [
-          { label: 'إجمالي الإيرادات', value: money(data.drinksRevenue), color: 'text-sky-600' },
-          { label: 'المسدد (نقدًا)', value: money(data.drinksPaid), color: 'text-emerald-600' },
-          { label: 'الآجل (دين)', value: money(data.drinksCredit), color: 'text-rose-600' },
-          { label: 'الأرباج المتوقعة', value: money(data.drinksProfit), color: 'text-amber-600' },
-          { label: 'الأرباح المحققة', value: money(data.drinksRealizedProfit), color: 'text-emerald-600' },
-          { label: 'الأرباح المؤجلة', value: money(data.drinksDeferredProfit), color: 'text-rose-600' },
-        ] })} className="text-right">
-          <Stat label="أرباح المشروبات" value={money(data.drinksProfit)} color="amber" icon={<CupSoda size={18} className="text-amber-500" />} />
+        <button onClick={() => setPopup({ title: 'تفاصيل إجمالي الكاش', rows: [
+          ...data.boxToday.map((bt: any) => ({ label: bt.box.name + ' — وارد اليوم', value: money(bt.inflow), color: 'text-emerald-600' })),
+          ...data.boxToday.map((bt: any) => ({ label: bt.box.name + ' — صادر اليوم', value: money(bt.outflow), color: 'text-rose-600' })),
+          { label: 'إجمالي الكاش الحالي', value: money(data.totalCash), color: 'text-violet-700 font-extrabold' },
+        ] })} className="text-right w-full">
+          <Stat label="إجمالي الكاش (كل الصناديق)" value={money(data.totalCash)} color="violet" icon={<Coins size={18} className="text-violet-500" />} />
         </button>
-        <Stat label="صافي الأرباح" value={money(data.netProfit)} color="violet" icon={<TrendingUp size={18} className="text-violet-500" />} />
-        <Stat label="ديون الفترة" value={money(data.todayDebts)} color="rose" icon={<AlertTriangle size={18} className="text-rose-500" />} />
-        <Stat label="إجمالي ديون الزبائن" value={money(data.totalCustomerDebts)} color="rose" icon={<Wallet size={18} className="text-rose-500" />} />
-        <Stat label="الزبائن النشطون" value={num(data.activeCustomers)} color="sky" icon={<Users size={18} className="text-sky-500" />} />
-        <Stat label="أجهزة قيد الشحن" value={num(data.chargingDevices)} color="amber" icon={<Smartphone size={18} className="text-amber-500" />} />
       </div>
 
       {/* ===== تتبع التدفق المالي ===== */}

@@ -7,8 +7,8 @@ import { money, fmtDateTime } from '../lib/format';
 import Modal from '../components/Modal';
 import { SectionTitle, Badge, EmptyState, Stat } from '../components/ui';
 
-// صناديق محذوفة نهائيًا (لم تعد تُنشأ في التهيئة، لكن قد تكون موجودة في قواعد بيانات قديمة)
-const HIDDEN_CODES = ['daily_debts', 'drinks_profit_partner', 'savings'];
+// صناديق مخفية عن واجهة الصناديق (مدارة من قسم الشركاء مباشرةً)
+const HIDDEN_CODES = ['daily_debts', 'drinks_profit_partner', 'savings', 'partner_fund', 'partner_piggy', 'drinks_profit'];
 
 // شرح كل صندوق: المصدر، الاحتساب، العمليات المؤثرة
 const BOX_INFO: Record<string, { source: string; calc: string; ops: string }> = {
@@ -22,17 +22,11 @@ const BOX_INFO: Record<string, { source: string; calc: string; ops: string }> = 
     calc: 'يزيد مع كل فاتورة مشروبات نقدية',
     ops: 'إتمام فاتورة، تراجع فاتورة، دفع مورد، توريد مدفوع، إيداع/صرف يدوي',
   },
-  drinks_profit: {
-    source: 'أرباح المشروبات المحسوبة',
-    calc: 'يزيد تلقائيًا بنسبة الربح من كل فاتورة',
-    ops: 'إتمام فاتورة، تراجع، إيداع/صرف يدوي',
-  },
 };
 
 const boxBadge = (code: string): { color: 'sky' | 'amber' | 'violet' | 'slate'; label: string } => {
   if (code === 'charging') return { color: 'sky', label: 'شحن' };
   if (code === 'drinks') return { color: 'amber', label: 'مشروبات' };
-  if (code === 'drinks_profit') return { color: 'violet', label: 'أرباح' };
   return { color: 'slate', label: code };
 };
 

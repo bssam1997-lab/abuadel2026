@@ -3,6 +3,7 @@ import {
   BatteryCharging, Plus, Smartphone, LogOut, Pencil, Ban, Check, Search,
   Plug, Battery, Undo2, X, Trash2, ShoppingCart, Settings2, UserPlus,
   Package, Headphones, AlertTriangle, ArrowUp, ArrowDown, Link2, Users,
+  ArrowLeftRight,
 } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
@@ -10,7 +11,7 @@ import { useToast } from '../components/Toast';
 import { useCustomers } from '../lib/hooks';
 import { money, fmtTime, fmtDateTime, todayISO, fmtDate } from '../lib/format';
 import Modal from '../components/Modal';
-import { SectionTitle, Badge, EmptyState } from '../components/ui';
+import { SectionTitle, Badge, EmptyState, Stat } from '../components/ui';
 import type { Device, DeviceType, Accessory } from '../lib/types';
 
 // ============================================================
@@ -363,12 +364,22 @@ export default function Charging() {
   const [checkoutNewName, setCheckoutNewName] = useState('');
   const [checkoutRate, setCheckoutRate] = useState(100);
   const [checkoutPaid, setCheckoutPaid] = useState(true);
+  const [checkoutCardNumber, setCheckoutCardNumber] = useState('');
 
   // تعديل / إلغاء / تسليم مفرد
   const [editDevice, setEditDevice] = useState<Device | null>(null);
   const [cancelDevice, setCancelDevice] = useState<Device | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [search, setSearch] = useState('');
+
+  // زبون عابر — اسم اختياري بدون إنشاء حساب دائم
+  const [checkoutWalkInName, setCheckoutWalkInName] = useState('');
+  const [checkoutSaveAsRegistered, setCheckoutSaveAsRegistered] = useState(false);
+
+  // إسناد جهاز لزبون آخر
+  const [reassignDevice, setReassignDevice] = useState<Device | null>(null);
+  const [reassignCustSearch, setReassignCustSearch] = useState('');
+  const [reassignCustId, setReassignCustId] = useState('');
 
   // إدارة أجهزة الزبون (modal واحد لكل الزبون)
   const [manageCustomer, setManageCustomer] = useState<any | null>(null);
@@ -396,11 +407,22 @@ export default function Charging() {
       customerName(d.customer_id).toLowerCase().includes(q);
   };
 
-  const waiting = devices.filter((d) => d.status === 'charging' && isToday(d) && matches(d));
+  // الأجهزة قيد الشحن: تظهر دائماً بغض النظر عن التاريخ حتى تُسلَّم
+  const waiting = devices.filter((d) => d.status === 'charging' && matches(d));
+  // الأجهزة المستلمة: تظهر فقط إذا سُلِّمت اليوم
   const delivered = devices.filter((d) => d.status === 'delivered' && isToday(d) && matches(d));
   const visible = tab === 'charging' ? waiting : delivered;
 
   const chargeIconClass = (lvl: number) => CHARGE_LEVELS.find((c) => c.value === lvl)?.iconClass || 'text-slate-500';
+
+  // ملخص مالي لأجهزة اليوم
+  const todayFinancial = useMemo(() => {
+    const todayDevices = devices.filter((d) => (d.created_at || '') >= todayStart && d.status !== 'cancelled');
+    const collected = todayDevices.filter((d) => d.status === 'delivered' && d.paid).reduce((s, d) => s + Number(d.price), 0);
+    const deferred = todayDevices.filter((d) => d.status === 'delivered' && !d.paid).reduce((s, d) => s + Number(d.price), 0);
+    const pending = todayDevices.filter((d) => d.status === 'charging').reduce((s, d) => s + Number(d.price), 0);
+    return { collected, deferred, pending };
+  }, [devices]);
 
   // تجميع الأجهزة حسب الزبون (متطلب #8)
   const customerGroups = useMemo(() => {
@@ -482,7 +504,8 @@ export default function Charging() {
 
   const openCheckout = () => {
     if (cart.length === 0) { push('السلة فارغة', 'error'); return; }
-    setCheckoutCustomerId(''); setCheckoutNewName(''); setCheckoutRate(100); setCheckoutPaid(true);
+    setCheckoutCustomerId(''); setCheckoutNewName(''); setCheckoutRate(100); setCheckoutPaid(true); setCheckoutCardNumber('');
+    setCheckoutWalkInName(''); setCheckoutSaveAsRegistered(false);
     setCheckoutOpen(true);
   };
 
@@ -491,8 +514,24 @@ export default function Charging() {
   // لا يتم أي عملية مالية عند الاستلام — التسليم المالي يتم فقط عبر "تسليم الجهاز"
   // نفس الزبون → نفس السجل، لا صف جديد (متطلب #2)
   // ============================================================
+  // إسناد جهاز لزبون آخر
+  const reassignDeviceFn = () => {
+    if (!reassignDevice || !reassignCustId) return;
+    db.updateById('devices', reassignDevice.id, { customer_id: reassignCustId, customer_name: null });
+    log('reassign_device', 'devices', reassignDevice.id, reassignCustId);
+    push('تم إسناد الجهاز للزبون الجديد', 'success');
+    setReassignDevice(null); setReassignCustSearch(''); setReassignCustId('');
+    load();
+    refreshManage();
+  };
+
   const confirmCheckout = () => {
+    // يُسمح بالمتابعة إذا: زبون مسجل، أو رقم بطاقة، أو اسم عابر
+    if (!checkoutCustomerId && !checkoutCardNumber.trim() && !checkoutWalkInName.trim()) {
+      push('أدخل رقم البطاقة أو اسم الزبون للمتابعة', 'error'); return;
+    }
     let custId = checkoutCustomerId;
+    let walkInName = '';
     if (custId === '__new__' && checkoutNewName.trim()) {
       const created = db.insert('customers', {
         name: checkoutNewName.trim(), phone: null, notes: null, credit_limit: 0,
@@ -502,13 +541,27 @@ export default function Charging() {
       refreshCustomers();
     } else if (custId === '__new__') {
       custId = '';
+    } else if (!custId && checkoutWalkInName.trim()) {
+      if (checkoutSaveAsRegistered) {
+        // حفظ الزبون العابر كزبون مسجل دائم
+        const created = db.insert('customers', {
+          name: checkoutWalkInName.trim(), phone: null, notes: null, credit_limit: 0,
+          trust_limit: 0, drinks_credit_limit: 0, debt_locked: false, is_vip: false, created_at: db.now(),
+        });
+        custId = created.id;
+        refreshCustomers();
+      } else {
+        // الاحتفاظ بالاسم على الجهاز فقط بدون إنشاء حساب
+        walkInName = checkoutWalkInName.trim();
+      }
     }
 
     cart.forEach((line) => {
       const created = db.insert('devices', {
         customer_id: custId || null,
+        customer_name: walkInName || null,
         device_type: line.deviceType,
-        device_number: null,
+        device_number: checkoutCardNumber.trim() || null,
         accessory: line.accessories.length > 0 ? line.accessories.join('، ') : 'بدون ملحقات',
         accessories: JSON.stringify(line.accessories),
         charge_level: line.chargeLevel,
@@ -543,19 +596,11 @@ export default function Charging() {
       status: 'delivered', check_out_at: db.now(), paid: deliverPaid, checkout_charge_level: deliverCheckoutLevel,
     });
     if (deliverPaid) {
+      // المبلغ يُرحَّل حصراً إلى صندوق كاش الشحن — لا يُوزَّع على الشركاء تلقائياً
       const box = db.first<any>('cash_boxes', (r) => r.code === 'charging');
       if (box) {
         db.updateById('cash_boxes', box.id, { balance: Number(box.balance) + Number(deliverDevice.price) });
         db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'in', amount: Number(deliverDevice.price), reason: `تسليم شحن: ${deliverDevice.device_type}`, related_id: deliverDevice.id, created_at: db.now() });
-      }
-      // توزيع الربح بالتساوي على الشركاء
-      const partners = db.select<any>('partners');
-      if (partners.length > 0) {
-        const share = Number(deliverDevice.price) / partners.length;
-        partners.forEach((p) => {
-          db.updateById('partners', p.id, { balance: Number(p.balance) + share });
-          db.insert('partner_ledger', { partner_id: p.id, type: 'profit', amount: share, note: `توزيع ربح شحن: ${deliverDevice.device_type}`, created_at: db.now() });
-        });
       }
     } else if (deliverDevice.customer_id) {
       const lastDebt = db.select<any>('debts').filter((d) => d.customer_id === deliverDevice.customer_id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))[0];
@@ -569,6 +614,7 @@ export default function Charging() {
     log('deliver_device', 'devices', deliverDevice.id, String(deliverDevice.price));
     push('تم تسليم الجهاز', 'success');
     setDeliverDevice(null); setDeliverPaid(true);
+    setTab('charging'); // عودة تلقائية لقائمة الشحن فور التسليم
     load();
     refreshManage();
   };
@@ -653,13 +699,14 @@ export default function Charging() {
   // ============================================================
   const refreshManage = () => {
     if (!manageCustomer) return;
-    const custDevices = db.select<Device>('devices').filter((d) => d.customer_id === manageCustomer.id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-    setManageCustomer({ ...manageCustomer, devices: custDevices });
+    const all = db.select<Device>('devices').filter((d) => d.customer_id === manageCustomer.id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    // الأجهزة النشطة: قيد الشحن فقط — الأرشيف: المسلمة والملغاة
+    setManageCustomer({ ...manageCustomer, devices: all.filter((d) => d.status === 'charging'), archived: all.filter((d) => d.status !== 'charging') });
   };
 
   const openManageCustomer = (c: any) => {
-    const custDevices = db.select<Device>('devices').filter((x) => x.customer_id === c.id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-    setManageCustomer({ ...c, devices: custDevices });
+    const all = db.select<Device>('devices').filter((x) => x.customer_id === c.id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    setManageCustomer({ ...c, devices: all.filter((d) => d.status === 'charging'), archived: all.filter((d) => d.status !== 'charging') });
   };
 
   const openManageByDevice = (d: Device) => {
@@ -915,13 +962,13 @@ export default function Charging() {
             </div>
 
             <div>
-              <label className="label">الزبون</label>
+              <label className="label">الزبون المسجل (بحث اختياري)</label>
               <CustomerSearch
                 customers={customers}
                 selectedId={checkoutCustomerId}
                 onSelect={(id, name) => {
                   if (id === '__new__') { setCheckoutCustomerId('__new__'); setCheckoutNewName(name); }
-                  else setCheckoutCustomerId(id);
+                  else { setCheckoutCustomerId(id); setCheckoutWalkInName(''); }
                 }}
                 onClear={() => { setCheckoutCustomerId(''); setCheckoutNewName(''); }}
               />
@@ -930,6 +977,41 @@ export default function Charging() {
                   <UserPlus size={16} /> سيتم إنشاء زبون جديد: <b>{checkoutNewName}</b>
                 </div>
               )}
+              {/* زبون عابر — اسم بدون حساب دائم */}
+              {!checkoutCustomerId && (
+                <div className="mt-2 space-y-2">
+                  <input
+                    className="input text-sm"
+                    placeholder="اسم الزبون العابر (اختياري)"
+                    value={checkoutWalkInName}
+                    onChange={(e) => setCheckoutWalkInName(e.target.value)}
+                  />
+                  {checkoutWalkInName.trim() && (
+                    <label className="flex items-center gap-2 text-sm cursor-pointer select-none text-slate-600 dark:text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={checkoutSaveAsRegistered}
+                        onChange={(e) => setCheckoutSaveAsRegistered(e.target.checked)}
+                        className="rounded accent-sky-600"
+                      />
+                      حفظ كزبون مسجل دائم في قائمة الديون
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="label">
+                رقم البطاقة
+                {checkoutCustomerId && <span className="text-slate-400 text-xs font-normal mr-1">(اختياري للزبون المسجل)</span>}
+              </label>
+              <input
+                className="input"
+                placeholder="رقم البطاقة (اختياري)"
+                value={checkoutCardNumber}
+                onChange={(e) => setCheckoutCardNumber(e.target.value)}
+              />
             </div>
 
             <div>
@@ -989,6 +1071,13 @@ export default function Charging() {
         </div>
       </div>
 
+      {/* ملخص مالي اليوم */}
+      <div className="grid grid-cols-3 gap-3">
+        <Stat label="المقبوض اليوم" value={money(todayFinancial.collected)} color="emerald" icon={<Check size={18} className="text-emerald-500" />} />
+        <Stat label="الآجل اليوم" value={money(todayFinancial.deferred)} color="rose" icon={<BatteryCharging size={18} className="text-rose-400" />} />
+        <Stat label="قيد الشحن" value={money(todayFinancial.pending)} color="amber" icon={<BatteryCharging size={18} className="text-amber-500" />} />
+      </div>
+
       {/* عرض اليوم + التبويبات */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1">
@@ -1027,43 +1116,85 @@ export default function Charging() {
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-slate-700 max-h-[65vh] overflow-y-auto">
             {customerGroups.map((grp) => {
-              const name = grp.customer?.name || 'بدون زبون';
-              const chargingCount = grp.devices.filter((d) => d.status === 'charging').length;
-              const deliveredCount = grp.devices.filter((d) => d.status === 'delivered').length;
-              const totalPrice = grp.devices.reduce((s, d) => s + (Number(d.price) || 0), 0);
-              return (
-                <div key={grp.customer?.id || 'anonymous'} className="p-3 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center justify-center w-10 h-10 rounded-full bg-sky-100 text-sky-600 dark:bg-sky-900/40 dark:text-sky-300 shrink-0">
-                      <Users size={20} />
+              // ── زبون مسجل: صف مجمّع + زر إدارة الأجهزة ──────────────────────
+              if (grp.customer) {
+                const chargingCount = grp.devices.filter((d) => d.status === 'charging').length;
+                const deliveredCount = grp.devices.filter((d) => d.status === 'delivered').length;
+                const totalPrice = grp.devices.reduce((s, d) => s + (Number(d.price) || 0), 0);
+                return (
+                  <div key={grp.customer.id} className="p-3 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center justify-center w-10 h-10 rounded-full bg-sky-100 text-sky-600 dark:bg-sky-900/40 dark:text-sky-300 shrink-0">
+                        <Users size={20} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-slate-700 dark:text-slate-200 truncate">{grp.customer.name}</span>
+                          <Badge color="slate">{grp.devices.length} جهاز</Badge>
+                          {chargingCount > 0 && <Badge color="amber">{chargingCount} قيد الشحن</Badge>}
+                          {deliveredCount > 0 && <Badge color="emerald">{deliveredCount} مسلّم</Badge>}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                          <span>{grp.devices.map((d) => d.device_type).filter((v, i, a) => a.indexOf(v) === i).slice(0, 3).join('، ')}{grp.devices.length > 3 && ' ...'}</span>
+                          {grp.devices.some((d) => d.device_number) && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-bold text-xs">
+                              #{grp.devices.filter((d) => d.device_number).map((d) => d.device_number).join(' · ')}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-extrabold text-sky-600 dark:text-sky-400">{money(totalPrice)}</span>
+                        <button onClick={() => openManageCustomer(grp.customer)} className="btn-ghost text-sm py-2" title="إدارة جميع أجهزة الزبون">
+                          <Smartphone size={16} /> إدارة الأجهزة
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              // ── زبائن عابرون: صف لكل جهاز مع اسمه وزر إسناد ─────────────────
+              return grp.devices.map((d) => {
+                const displayName = (d as any).customer_name || 'زبون عابر';
+                return (
+                  <div key={d.id} className="p-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                    <div className="flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 text-slate-400 dark:bg-slate-700 dark:text-slate-400 shrink-0">
+                      <Smartphone size={18} />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-slate-700 dark:text-slate-200 truncate">{name}</span>
-                        <Badge color="slate">{grp.devices.length} جهاز</Badge>
-                        {chargingCount > 0 && <Badge color="amber">{chargingCount} قيد الشحن</Badge>}
-                        {deliveredCount > 0 && <Badge color="emerald">{deliveredCount} مسلّم</Badge>}
+                        <span className="font-bold text-slate-600 dark:text-slate-300 truncate">{displayName}</span>
+                        <Badge color={d.status === 'charging' ? 'amber' : 'emerald'}>{d.device_type}</Badge>
+                        {d.device_number && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-bold text-xs">
+                            #{d.device_number}
+                          </span>
+                        )}
                       </div>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        {grp.devices.map((d) => d.device_type).filter((v, i, a) => a.indexOf(v) === i).slice(0, 3).join('، ')}
-                        {grp.devices.length > 3 && ' ...'}
-                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">{d.accessory || 'بدون ملحقات'} · {d.charge_level}%</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-extrabold text-sky-600 dark:text-sky-400">{money(totalPrice)}</span>
-                      {grp.customer && (
+                      <span className="font-extrabold text-sky-600 dark:text-sky-400">{money(d.price)}</span>
+                      {d.status === 'charging' && (
                         <button
-                          onClick={() => openManageCustomer(grp.customer)}
-                          className="btn-ghost text-sm py-2"
-                          title="إدارة جميع أجهزة الزبون"
+                          onClick={() => { setDeliverCheckoutLevel(100); setDeliverPaid(true); setDeliverDevice(d); }}
+                          className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+                          title="تسليم"
                         >
-                          <Smartphone size={16} /> إدارة الأجهزة
+                          <LogOut size={16} />
                         </button>
                       )}
+                      <button
+                        onClick={() => { setReassignDevice(d); setReassignCustId(''); setReassignCustSearch(''); }}
+                        className="p-1.5 rounded-lg text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/30"
+                        title="إسناد لزبون مسجل"
+                      >
+                        <ArrowLeftRight size={16} />
+                      </button>
                     </div>
                   </div>
-                </div>
-              );
+                );
+              });
             })}
           </div>
         )}
@@ -1175,106 +1306,182 @@ export default function Charging() {
         </div>
       </Modal>
 
-      {/* Modal إدارة أجهزة الزبون — يعرض كل الأجهزة في نافذة واحدة (متطلب #2) */}
-      <Modal open={!!manageCustomer} onClose={() => setManageCustomer(null)} title={`إدارة الأجهزة — ${manageCustomer?.name || ''}`} size="lg">
-        {manageCustomer && (
+      {/* Modal إسناد جهاز لزبون آخر */}
+      <Modal open={!!reassignDevice} onClose={() => setReassignDevice(null)} title={`إسناد الجهاز — ${reassignDevice?.device_type || ''}`} size="sm">
+        {reassignDevice && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Users className="text-sky-500" size={18} />
-                <span className="font-bold text-slate-700 dark:text-slate-200">{(manageCustomer.devices || []).length} جهاز</span>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              سيُنقل الجهاز من حساب <b>{(reassignDevice as any).customer_name || 'زبون عابر'}</b> إلى الزبون المختار أدناه.
+            </p>
+            <div>
+              <label className="label">ابحث عن الزبون الجديد</label>
+              <div className="relative">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input
+                  className="input pr-9"
+                  placeholder="اكتب الاسم أو رقم الهاتف..."
+                  value={reassignCustSearch}
+                  onChange={(e) => { setReassignCustSearch(e.target.value); setReassignCustId(''); }}
+                  autoFocus
+                />
               </div>
-              <button
-                onClick={() => {
-                  setAddDeviceForCustomer(manageCustomer);
-                  setNewDeviceType(''); setNewDevicePrice(0); setNewDeviceCharge(0); setNewDeviceAccessories([]);
-                }}
-                className="btn-primary text-sm py-2"
-              >
-                <Plus size={16} /> إضافة جهاز جديد
-              </button>
+              {reassignCustSearch.trim() && (
+                <div className="mt-1.5 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden max-h-52 overflow-y-auto">
+                  {customers
+                    .filter((c) =>
+                      (c.name || '').toLowerCase().includes(reassignCustSearch.toLowerCase()) ||
+                      (c.phone || '').includes(reassignCustSearch)
+                    )
+                    .map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => { setReassignCustId(c.id); setReassignCustSearch(c.name); }}
+                        className={`w-full text-right px-3 py-2.5 text-sm flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 transition ${reassignCustId === c.id ? 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 font-bold' : ''}`}
+                      >
+                        <div className="w-7 h-7 rounded-full bg-sky-100 dark:bg-sky-900 flex items-center justify-center text-sky-600 dark:text-sky-300 text-xs font-bold shrink-0">{c.name[0]}</div>
+                        <div>
+                          <p className="font-semibold">{c.name}</p>
+                          {c.phone && <p className="text-xs text-slate-400">{c.phone}</p>}
+                        </div>
+                        {reassignCustId === c.id && <Check size={16} className="mr-auto text-emerald-500" />}
+                      </button>
+                    ))
+                  }
+                  {customers.filter((c) =>
+                    (c.name || '').toLowerCase().includes(reassignCustSearch.toLowerCase()) ||
+                    (c.phone || '').includes(reassignCustSearch)
+                  ).length === 0 && (
+                    <p className="px-3 py-3 text-sm text-slate-400 text-center">لا توجد نتائج</p>
+                  )}
+                </div>
+              )}
             </div>
-
-            {(manageCustomer.devices || []).length === 0 ? (
-              <EmptyState icon={<Smartphone size={36} />} title="لا توجد أجهزة" subtitle="استخدم زر «إضافة جهاز جديد»" />
-            ) : (
-              <div className="space-y-2">
-                {(manageCustomer.devices || []).map((d: Device) => {
-                  let accArr: string[] = [];
-                  try { accArr = JSON.parse(d.accessories || '[]'); } catch { accArr = []; }
-                  return (
-                    <div key={d.id} className={`p-3 rounded-xl border ${d.status === 'charging' ? 'border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800' : d.status === 'delivered' ? 'border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-800' : 'border-rose-200 bg-rose-50 dark:bg-rose-900/20 dark:border-rose-800'}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-slate-700 dark:text-slate-200">{d.device_type}</span>
-                            {d.paid ? <Badge color="emerald">مدفوع</Badge> : <Badge color="rose">غير مدفوع</Badge>}
-                            <Badge color={d.status === 'charging' ? 'amber' : d.status === 'delivered' ? 'emerald' : 'rose'}>
-                              {d.status === 'charging' ? 'بالانتظار' : d.status === 'delivered' ? 'مسلّم' : 'ملغي'}
-                            </Badge>
-                          </div>
-                          {accArr.length > 0 ? (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {accArr.map((a) => (
-                                <span key={a} className="chip bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-                                  <Link2 size={10} /> {a}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{d.accessory || 'بدون ملحقات'}</p>
-                          )}
-                          <p className="text-xs text-slate-400 mt-1">
-                            دخول: {fmtDateTime(d.check_in_at)} · شحن: {d.charge_level}%
-                            {d.checkout_charge_level != null ? ` → تسليم: ${d.checkout_charge_level}%` : ''}
-                            {d.check_out_at ? ` · تسليم: ${fmtDateTime(d.check_out_at)}` : ''}
-                          </p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1">
-                          <span className="font-extrabold text-sky-600 dark:text-sky-400">{money(d.price)}</span>
-                        </div>
-                        <div className="flex gap-1 flex-wrap justify-end">
-                          {d.status === 'charging' && (
-                            <button
-                              onClick={() => { setDeliverCheckoutLevel(100); setDeliverPaid(true); setDeliverDevice(d); }}
-                              className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"
-                              title="تسليم هذا الجهاز"
-                            >
-                              <LogOut size={16} />
-                            </button>
-                          )}
-                          {d.status === 'delivered' && (
-                            <button
-                              onClick={() => undoDelivery(d)}
-                              className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-900/30"
-                              title="التراجع عن التسليم"
-                            >
-                              <Undo2 size={16} />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => setEditDevice({ ...d })}
-                            className="p-1.5 rounded-lg text-sky-600 hover:bg-sky-100 dark:hover:bg-sky-900/30"
-                            title="تعديل"
-                          >
-                            <Pencil size={16} />
-                          </button>
-                          <button
-                            onClick={() => deleteDevice(d)}
-                            className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-900/30"
-                            title="حذف"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
+        <div className="flex gap-2 justify-end mt-4">
+          <button onClick={() => setReassignDevice(null)} className="btn-ghost">إلغاء</button>
+          <button onClick={reassignDeviceFn} disabled={!reassignCustId} className="btn-primary">
+            <ArrowLeftRight size={16} /> تأكيد الإسناد
+          </button>
+        </div>
+      </Modal>
+
+      {/* Modal إدارة أجهزة الزبون — يعرض كل الأجهزة في نافذة واحدة (متطلب #2) */}
+      <Modal open={!!manageCustomer} onClose={() => setManageCustomer(null)} title={`إدارة الأجهزة — ${manageCustomer?.name || ''}`} size="lg">
+        {manageCustomer && (() => {
+          const activeDevices: Device[] = manageCustomer.devices || [];
+          const archivedDevices: Device[] = manageCustomer.archived || [];
+
+          const DeviceRow = ({ d, isArchived }: { d: Device; isArchived?: boolean }) => {
+            let accArr: string[] = [];
+            try { accArr = JSON.parse(d.accessories || '[]'); } catch { accArr = []; }
+            return (
+              <div key={d.id} className={`p-3 rounded-xl border ${isArchived ? 'border-slate-200 bg-slate-50 dark:bg-slate-800/40 dark:border-slate-700 opacity-80' : 'border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800'}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-slate-700 dark:text-slate-200">{d.device_type}</span>
+                      {d.device_number && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-bold text-xs">#{d.device_number}</span>
+                      )}
+                      {d.paid ? <Badge color="emerald">مدفوع</Badge> : <Badge color="rose">غير مدفوع</Badge>}
+                      {isArchived && (
+                        <Badge color={d.status === 'delivered' ? 'emerald' : 'rose'}>
+                          {d.status === 'delivered' ? 'مسلّم' : 'ملغي'}
+                        </Badge>
+                      )}
+                    </div>
+                    {accArr.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {accArr.map((a) => (
+                          <span key={a} className="chip bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                            <Link2 size={10} /> {a}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{d.accessory || 'بدون ملحقات'}</p>
+                    )}
+                    <p className="text-xs text-slate-400 mt-1">
+                      دخول: {fmtDateTime(d.check_in_at)} · شحن: {d.charge_level}%
+                      {d.checkout_charge_level != null ? ` → تسليم: ${d.checkout_charge_level}%` : ''}
+                      {d.check_out_at ? ` · تسليم: ${fmtDateTime(d.check_out_at)}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="font-extrabold text-sky-600 dark:text-sky-400">{money(d.price)}</span>
+                  </div>
+                  <div className="flex gap-1 flex-wrap justify-end">
+                    {d.status === 'charging' && (
+                      <button onClick={() => { setDeliverCheckoutLevel(100); setDeliverPaid(true); setDeliverDevice(d); }} className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-100 dark:hover:bg-emerald-900/30" title="تسليم هذا الجهاز">
+                        <LogOut size={16} />
+                      </button>
+                    )}
+                    {d.status === 'delivered' && (
+                      <button onClick={() => undoDelivery(d)} className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-900/30" title="التراجع عن التسليم">
+                        <Undo2 size={16} />
+                      </button>
+                    )}
+                    <button onClick={() => { setReassignDevice(d); setReassignCustId(''); setReassignCustSearch(''); }} className="p-1.5 rounded-lg text-violet-600 hover:bg-violet-100 dark:hover:bg-violet-900/30" title="إسناد لزبون آخر">
+                      <ArrowLeftRight size={16} />
+                    </button>
+                    <button onClick={() => setEditDevice({ ...d })} className="p-1.5 rounded-lg text-sky-600 hover:bg-sky-100 dark:hover:bg-sky-900/30" title="تعديل">
+                      <Pencil size={16} />
+                    </button>
+                    <button onClick={() => deleteDevice(d)} className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-900/30" title="حذف">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          };
+
+          return (
+            <div className="space-y-3">
+              {/* رأس الشريط */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <BatteryCharging className="text-amber-500" size={18} />
+                  <span className="font-bold text-slate-700 dark:text-slate-200">{activeDevices.length} قيد الشحن</span>
+                  {archivedDevices.length > 0 && (
+                    <span className="text-xs text-slate-400 dark:text-slate-500">· {archivedDevices.length} مؤرشف</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => { setAddDeviceForCustomer(manageCustomer); setNewDeviceType(''); setNewDevicePrice(0); setNewDeviceCharge(0); setNewDeviceAccessories([]); }}
+                  className="btn-primary text-sm py-2"
+                >
+                  <Plus size={16} /> إضافة جهاز جديد
+                </button>
+              </div>
+
+              {/* ── قائمة الأجهزة النشطة (قيد الشحن) ── */}
+              {activeDevices.length === 0 ? (
+                <EmptyState icon={<Smartphone size={36} />} title="لا توجد أجهزة قيد الشحن" subtitle="جميع أجهزة هذا الزبون مسلَّمة أو ملغاة" />
+              ) : (
+                <div className="space-y-2">
+                  {activeDevices.map((d: Device) => <DeviceRow key={d.id} d={d} />)}
+                </div>
+              )}
+
+              {/* ── أرشيف الأجهزة المسلمة / الملغاة ── */}
+              {archivedDevices.length > 0 && (
+                <details className="group">
+                  <summary className="cursor-pointer flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition list-none select-none">
+                    <Check size={15} className="text-emerald-500" />
+                    أرشيف الأجهزة المسلمة والملغاة ({archivedDevices.length})
+                    <span className="mr-auto text-xs opacity-60 group-open:hidden">اضغط للعرض</span>
+                    <span className="mr-auto text-xs opacity-60 hidden group-open:inline">إخفاء</span>
+                  </summary>
+                  <div className="space-y-2 mt-2">
+                    {archivedDevices.map((d: Device) => <DeviceRow key={d.id} d={d} isArchived />)}
+                  </div>
+                </details>
+              )}
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* Modal إضافة جهاز جديد للزبون (داخل إدارة الأجهزة) */}

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search } from 'lucide-react';
+import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
 import { money, fmtDateTime, fmtDate } from '../lib/format';
 import Modal from '../components/Modal';
-import { SectionTitle, Badge, EmptyState } from '../components/ui';
+import { SectionTitle, Badge, EmptyState, Stat } from '../components/ui';
 
 const DEBT_TYPES: { value: string; label: string; color: any }[] = [
   { value: 'charging', label: 'شحن', color: 'sky' },
@@ -46,6 +46,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   const [deleteCust, setDeleteCust] = useState<any | null>(null);
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [payMode, setPayMode] = useState<'charging' | 'drinks' | 'auto'>('auto');
+  const [invDetail, setInvDetail] = useState<{ inv: any; items: any[] } | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -67,6 +68,10 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   const [manualAmount, setManualAmount] = useState('');
   const [manualDesc, setManualDesc] = useState('');
 
+  // فلتر الطباعة بالتاريخ
+  const [printFrom, setPrintFrom] = useState('');
+  const [printTo, setPrintTo] = useState('');
+
   const load = () => {
     const all = db.select<any>('customers').sort((a, b) => a.name.localeCompare(b.name, 'ar'));
     const allDebts = db.select<any>('debts');
@@ -75,11 +80,64 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
       const totalDebit = custDebts.reduce((s: number, d: any) => s + Number(d.debit), 0);
       const totalCredit = custDebts.reduce((s: number, d: any) => s + Number(d.credit), 0);
       const lastMove = custDebts.length ? custDebts[custDebts.length - 1].created_at : null;
-      const chargingDebt = custDebts.filter((d) => d.type === 'charging').reduce((s: number, d: any) => s + Number(d.debit) - Number(d.credit), 0);
-      const drinksDebt = custDebts.filter((d) => d.type === 'drinks').reduce((s: number, d: any) => s + Number(d.debit) - Number(d.credit), 0);
-      return { ...c, total_debit: totalDebit, total_credit: totalCredit, balance: totalDebit - totalCredit, last_move: lastMove, charging_debt: chargingDebt, drinks_debt: drinksDebt };
+      const balance = totalDebit - totalCredit;
+
+      // ── حساب ديون الأقسام مع ضمان: charging_debt + drinks_debt = balance دائماً ──
+
+      // صافي كل فئة من قيودها المباشرة فقط
+      const cGross = custDebts.filter((d) => d.type === 'charging').reduce((s: number, d: any) => s + Number(d.debit) - Number(d.credit), 0);
+      const dGross = custDebts.filter((d) => d.type === 'drinks').reduce((s: number, d: any) => s + Number(d.debit) - Number(d.credit), 0);
+
+      let chargingDebt = 0;
+      let drinksDebt   = 0;
+
+      if (balance <= 0.001) {
+        // رصيد صفر أو دائن → كلتا الفئتين صفر إجبارياً (لا ديون وهمية)
+        chargingDebt = 0;
+        drinksDebt   = 0;
+      } else {
+        // الخطوة 1: إعادة توزيع الفائض بين الفئتين
+        // (دفع مشروبات أكثر من ديونه يُقلّص دين الشحن والعكس)
+        let cAdj = cGross;
+        let dAdj = dGross;
+        if (cAdj < 0) { dAdj += cAdj; cAdj = 0; } // فائض شحن → يُخصم من مشروبات
+        if (dAdj < 0) { cAdj += dAdj; dAdj = 0; } // فائض مشروبات → يُخصم من شحن
+        cAdj = Math.max(0, cAdj);
+        dAdj = Math.max(0, dAdj);
+
+        // الخطوة 2: توزيع الدائن غير المصنّف (تسوية/خصم/إيداع مباشر) تناسبياً
+        const adjSum    = cAdj + dAdj;
+        const unalloc   = adjSum - balance; // موجب = دائن غير موزع على فئة
+        if (unalloc > 0.001) {
+          if (adjSum > 0) {
+            const scale = balance / adjSum; // مقياس تخفيض متناسب
+            cAdj = Math.max(0, cAdj * scale);
+            dAdj = Math.max(0, dAdj * scale);
+          } else {
+            cAdj = balance; dAdj = 0;
+          }
+        }
+
+        // الخطوة 3: تصحيح دقة الفاصلة وضمان المجموع = balance
+        const finalSum = cAdj + dAdj;
+        if (Math.abs(finalSum - balance) > 0.005) {
+          cAdj = Math.max(0, balance - dAdj);
+        }
+
+        // تقريب لأعداد صحيحة + ضمان chargingDebt + drinksDebt = balance تماماً
+        chargingDebt = Math.round(cAdj);
+        drinksDebt   = Math.round(balance) - chargingDebt;
+        if (drinksDebt < 0) { chargingDebt += drinksDebt; drinksDebt = 0; }
+      }
+
+      return { ...c, total_debit: totalDebit, total_credit: totalCredit, balance, last_move: lastMove, charging_debt: chargingDebt, drinks_debt: drinksDebt };
     });
     setCustomers(enriched);
+    // مزامنة كشف الحساب المفتوح حالياً فوراً دون إغلاق وإعادة فتح (§3 — real-time sync)
+    if (statement) {
+      const fresh = enriched.find((c: any) => c.id === statement.id);
+      if (fresh) setStatement(fresh);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -132,82 +190,57 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     setDebts(buildUnifiedStatement(c.id));
   };
 
-  // Build a unified, chronological statement merging debts, invoices (with items), and devices.
+  // كشف الحساب يقرأ من جدول debts فقط — المصدر الوحيد للحقيقة المالية
+  // (الفواتير والأجهزة تُسجِّل قيودها في debts عند الاستحقاق؛ لا حاجة لعرضها مرة ثانية)
   const buildUnifiedStatement = (customerId: string): any[] => {
-    const rows: any[] = [];
-
-    // 1. debts table (charging debts, payments, manual entries, settlements, trust, etc.)
-    db.select<any>('debts')
+    return db.select<any>('debts')
       .filter((d) => d.customer_id === customerId)
-      .forEach((d) => {
-        rows.push({
-          id: d.id,
-          source: 'debt',
-          type: d.type,
-          customer_id: d.customer_id,
-          created_at: d.created_at,
-          description: d.description || '',
-          debit: Number(d.debit) || 0,
-          credit: Number(d.credit) || 0,
-          balance_after: Number(d.balance_after) || 0,
-          reversed: !!d.reversed,
-        });
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+      .map((d) => ({
+        id: d.id,
+        source: 'debt',
+        type: d.type,
+        customer_id: d.customer_id,
+        created_at: d.created_at,
+        description: d.description || '',
+        debit: Number(d.debit) || 0,
+        credit: Number(d.credit) || 0,
+        balance_after: Number(d.balance_after) || 0,
+        reversed: !!d.reversed,
+        related_invoice_id: d.related_invoice_id || null,
+      }));
+  };
+
+  // إعادة حساب الرصيد التراكمي لجميع زبائن النظام (§3.3)
+  const recalculateAllBalances = () => {
+    const allCustomers = db.select<any>('customers');
+    let fixed = 0;
+    allCustomers.forEach((c) => {
+      const rows = db.select<any>('debts')
+        .filter((d) => d.customer_id === c.id && !d.reversed)
+        .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+      let running = 0;
+      rows.forEach((r) => {
+        running = Math.round(running + Number(r.debit) - Number(r.credit));
+        db.updateById('debts', r.id, { balance_after: running });
+        fixed++;
       });
-
-    // 2. invoices + invoice_items (drinks) — expand each invoice into itemized rows
-    db.select<any>('invoices')
-      .filter((i) => i.customer_id === customerId && !i.reversed)
-      .forEach((inv) => {
-        const items = db.select<any>('invoice_items').filter((it) => it.invoice_id === inv.id);
-        const itemsDesc = items.map((it) => `${it.name || 'صنف'} ×${Number(it.qty) || 1}`).join('، ');
-        rows.push({
-          id: inv.id,
-          source: 'invoice',
-          type: 'drinks',
-          created_at: inv.created_at,
-          description: `مشروبات: ${itemsDesc || 'فاتورة مشروبات'}`,
-          debit: Number(inv.total) || 0,
-          credit: 0,
-          balance_after: 0, // recomputed below
-          reversed: false,
-        });
-      });
-
-    // 3. devices table (charging details: device type + accessory)
-    db.select<any>('devices')
-      .filter((d) => d.customer_id === customerId)
-      .forEach((d) => {
-        const parts = [d.device_type, d.accessory].filter(Boolean).join(' - ');
-        rows.push({
-          id: d.id,
-          source: 'device',
-          type: 'charging',
-          created_at: d.created_at,
-          description: `شحن: ${parts || 'جهاز'}`,
-          debit: Number(d.amount) || Number(d.price) || 0,
-          credit: 0,
-          balance_after: 0, // recomputed below
-          reversed: !!d.reversed,
-        });
-      });
-
-    // Sort chronologically (stable)
-    rows.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-
-    // Recompute running balance across the unified timeline.
-    // debts rows already carry an authoritative balance_after; for invoice/device rows
-    // we recompute by walking the timeline and accumulating debit - credit.
-    let running = 0;
-    rows.forEach((r) => {
-      if (r.source === 'debt') {
-        running = Number(r.balance_after) || (running + r.debit - r.credit);
-      } else {
-        running = running + r.debit - r.credit;
-        r.balance_after = running;
-      }
     });
+    push(`تمت إعادة حساب الأرصدة — ${fixed} قيد مُحدَّث`, 'success');
+    if (statement) openStatement(statement);
+    load();
+  };
 
-    return rows;
+  // حساب التوزيع التناسبي للسداد التلقائي — أعداد صحيحة كاملة
+  const computeAutoSplit = (amt: number) => {
+    const cDebt = Math.max(0, Math.round(statement?.charging_debt || 0));
+    const dDebt = Math.max(0, Math.round(statement?.drinks_debt || 0));
+    const total = cDebt + dDebt;
+    if (total <= 0) return { chargingPart: amt, drinksPart: 0 };
+    // تقريب للأقرب شيكل صحيح — الفارق يُضاف للقسم الأكبر تلقائياً
+    const cPart = Math.round((cDebt / total) * amt);
+    const dPart = amt - cPart; // يضمن مطابقة الإجمالي تماماً
+    return { chargingPart: cPart, drinksPart: dPart };
   };
 
   const submitPayment = () => {
@@ -215,105 +248,96 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     const amt = Number(payAmount) || 0;
     if (amt <= 0) { push('أدخل مبلغًا صحيحًا', 'error'); return; }
     const discount = Number(payDiscount) || 0;
-    const effectiveAmt = amt - discount;
-    if (effectiveAmt <= 0 && discount <= 0) { push('المبلغ غير صحيح', 'error'); return; }
 
-    const lastBalance = debts.length ? Number(debts[debts.length - 1].balance_after) : 0;
-    const newBalance = lastBalance - amt + discount;
-
-    // Determine payment type and allocation
-    let payType = 'manual';
-    let chargingPart = Number(payCharging) || 0;
-    let drinksPart = Number(payDrinks) || 0;
-    if (payMode === 'charging') { payType = 'charging'; chargingPart = amt; }
-    else if (payMode === 'drinks') { payType = 'drinks'; drinksPart = amt; }
-    else {
-      // auto: allocate to largest balance first
-      if (statement.charging_debt >= statement.drinks_debt) {
-        payType = 'charging';
-        const afterCharging = Math.max(0, statement.charging_debt - amt);
-        chargingPart = statement.charging_debt - afterCharging;
-        drinksPart = Math.max(0, amt - chargingPart);
-      } else {
-        payType = 'drinks';
-        const afterDrinks = Math.max(0, statement.drinks_debt - amt);
-        drinksPart = statement.drinks_debt - afterDrinks;
-        chargingPart = Math.max(0, amt - drinksPart);
-      }
+    // ── 1. تحديد حصة كل صندوق ──────────────────────────────────
+    let chargingPart = 0;
+    let drinksPart = 0;
+    if (payMode === 'charging') {
+      chargingPart = amt;
+    } else if (payMode === 'drinks') {
+      drinksPart = amt;
+    } else {
+      // تلقائي — توزيع تناسبي حسب نسبة كل نوع من الديون
+      const split = computeAutoSplit(amt);
+      chargingPart = split.chargingPart;
+      drinksPart = split.drinksPart;
     }
 
-    db.insert('debts', {
-      customer_id: statement.id, type: payType, description: payNote || 'تسديد دين',
-      debit: 0, credit: amt, balance_after: newBalance, reversed: false, created_at: db.now(),
-    });
-    if (discount > 0) {
+    // ── 2. إدراج قيود منفصلة لكل نوع (رصيد متراكم صحيح) ───────
+    const lastBalance = debts.length ? Number(debts[debts.length - 1].balance_after) : 0;
+    let runningBalance = lastBalance;
+
+    if (chargingPart > 0) {
+      runningBalance -= chargingPart;
       db.insert('debts', {
-        customer_id: statement.id, type: 'settlement', description: `خصم ${money(discount)}`,
-        debit: 0, credit: discount, balance_after: newBalance, reversed: false, created_at: db.now(),
+        customer_id: statement.id, type: 'charging',
+        description: payNote ? `${payNote} — شحن` : 'تسديد دين شحن',
+        debit: 0, credit: chargingPart, balance_after: runningBalance,
+        reversed: false, created_at: db.now(),
       });
     }
-    db.insert('debt_payments', {
-      customer_id: statement.id, amount: amt,
-      charging_part: chargingPart, drinks_part: drinksPart, discount_part: discount, note: payNote || null, created_at: db.now(),
-    });
-    const box = db.first<any>('cash_boxes', (r) => r.code === 'charging');
-    if (box) {
-      db.updateById('cash_boxes', box.id, { balance: Number(box.balance) + amt });
-      db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'in', amount: amt, reason: `تسديد دين: ${statement.name}`, created_at: db.now() });
+    if (drinksPart > 0) {
+      runningBalance -= drinksPart;
+      db.insert('debts', {
+        customer_id: statement.id, type: 'drinks',
+        description: payNote ? `${payNote} — مشروبات` : 'تسديد دين مشروبات',
+        debit: 0, credit: drinksPart, balance_after: runningBalance,
+        reversed: false, created_at: db.now(),
+      });
     }
     if (discount > 0) {
-      const dBox = db.first<any>('cash_boxes', (r) => r.code === 'daily_debts');
-      if (dBox) {
-        db.updateById('cash_boxes', dBox.id, { balance: Number(dBox.balance) - discount });
-        db.insert('cash_box_ledger', { cash_box_id: dBox.id, type: 'out', amount: discount, reason: `خصم دين: ${statement.name}`, created_at: db.now() });
+      runningBalance -= discount;
+      db.insert('debts', {
+        customer_id: statement.id, type: 'settlement',
+        description: `خصم ${money(discount)}`,
+        debit: 0, credit: discount, balance_after: runningBalance,
+        reversed: false, created_at: db.now(),
+      });
+    }
+
+    // ── 3. سجل الدفعة الموحّد ───────────────────────────────────
+    db.insert('debt_payments', {
+      customer_id: statement.id, amount: amt,
+      charging_part: chargingPart, drinks_part: drinksPart, discount_part: discount,
+      note: payNote || null, created_at: db.now(),
+    });
+
+    // ── 4. توجيه كاش الشحن فقط (بدون توزيع على الشركاء لتفادي الازدواجية) ──
+    if (chargingPart > 0) {
+      const cBox = db.first<any>('cash_boxes', (r) => r.code === 'charging');
+      if (cBox) {
+        db.updateById('cash_boxes', cBox.id, { balance: Number(cBox.balance) + chargingPart });
+        db.insert('cash_box_ledger', { cash_box_id: cBox.id, type: 'in', amount: chargingPart, reason: `تسديد دين شحن: ${statement.name}`, created_at: db.now() });
       }
     }
 
-    // Debt lock 50%/90% rules: update drinks_credit_limit
-    const cust = db.first<any>('customers', (r) => r.id === statement.id);
-    if (cust?.debt_locked) {
-      const currentLimit = Number(cust.drinks_credit_limit) || 0;
-      if (drinksPart > 0) {
-        const drinksDebtBefore = statement.drinks_debt;
-        if (drinksPart >= drinksDebtBefore) {
-          // Full settlement: 90% of settled amount
-          const newLimit = currentLimit + Math.round(drinksPart * 0.9 * 100) / 100;
-          db.updateById('customers', statement.id, { drinks_credit_limit: newLimit });
-        } else {
-          // Partial payment: 50% of payment
-          const newLimit = currentLimit + Math.round(drinksPart * 0.5 * 100) / 100;
-          db.updateById('customers', statement.id, { drinks_credit_limit: newLimit });
-        }
-      }
-    }
-
-    // Realize deferred drinks profit on drinks payment
+    // ── 5. توجيه كاش المشروبات ──────────────────────────────────
     if (drinksPart > 0) {
-      const pBox = db.first<any>('cash_boxes', (r) => r.code === 'drinks_profit');
-      if (pBox) {
-        // Find unpaid drinks invoices for this customer and realize profit proportionally
-        const custInvoices = db.select<any>('invoices').filter((i) => i.customer_id === statement.id && !i.reversed && Number(i.realized_profit) < Number(i.profit));
-        let remaining = drinksPart;
-        let totalRealized = 0;
-        for (const inv of custInvoices) {
-          if (remaining <= 0) break;
-          const invTotal = Number(inv.total);
-          const invPaid = Number(inv.paid_amount || 0);
-          const invDebt = invTotal - invPaid;
-          if (invDebt <= 0) continue;
-          const apply = Math.min(remaining, invDebt);
-          const profitRatio = invTotal > 0 ? apply / invTotal : 0;
-          const profitToRealize = Number(inv.profit) * profitRatio;
-          const newRealized = Number(inv.realized_profit || 0) + profitToRealize;
-          db.updateById('invoices', inv.id, { realized_profit: newRealized, paid_amount: Number(inv.paid_amount || 0) + apply });
-          totalRealized += profitToRealize;
-          remaining -= apply;
-        }
-        if (totalRealized > 0) {
-          db.updateById('cash_boxes', pBox.id, { balance: Number(pBox.balance) + totalRealized });
-          db.insert('cash_box_ledger', { cash_box_id: pBox.id, type: 'in', amount: totalRealized, reason: `أرباح محققة من تسديد: ${statement.name}`, created_at: db.now() });
-        }
+      const dBox = db.first<any>('cash_boxes', (r) => r.code === 'drinks');
+      if (dBox) {
+        db.updateById('cash_boxes', dBox.id, { balance: Number(dBox.balance) + drinksPart });
+        db.insert('cash_box_ledger', { cash_box_id: dBox.id, type: 'in', amount: drinksPart, reason: `تسديد دين مشروبات: ${statement.name}`, created_at: db.now() });
       }
+    }
+
+    // ── 6. خصم من صندوق اليومي ──────────────────────────────────
+    if (discount > 0) {
+      const ddBox = db.first<any>('cash_boxes', (r) => r.code === 'daily_debts');
+      if (ddBox) {
+        db.updateById('cash_boxes', ddBox.id, { balance: Number(ddBox.balance) - discount });
+        db.insert('cash_box_ledger', { cash_box_id: ddBox.id, type: 'out', amount: discount, reason: `خصم دين: ${statement.name}`, created_at: db.now() });
+      }
+    }
+
+    // ── 7. تحديث حد الائتمان للزبون المقفل ──────────────────────
+    const cust = db.first<any>('customers', (r) => r.id === statement.id);
+    if (cust?.debt_locked && drinksPart > 0) {
+      const currentLimit = Number(cust.drinks_credit_limit) || 0;
+      const drinksDebtBefore = statement.drinks_debt;
+      const newLimit = drinksPart >= drinksDebtBefore
+        ? currentLimit + Math.round(drinksPart * 0.9 * 100) / 100
+        : currentLimit + Math.round(drinksPart * 0.5 * 100) / 100;
+      db.updateById('customers', statement.id, { drinks_credit_limit: newLimit });
     }
 
     log('pay_debt', 'debts', statement.id, String(amt));
@@ -396,11 +420,24 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     if (!c) return;
     const win = window.open('', '_blank');
     if (!win) return;
-    const opening = debts.length ? (Number(debts[0].balance_after) - Number(debts[0].debit) + Number(debts[0].credit)) : 0;
-    const totalDebit = debts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
-    const totalCredit = debts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
-    const closing = debts.length ? Number(debts[debts.length - 1].balance_after) : Number(c.balance || 0);
-    const rows = debts.map((d) => `
+    // تطبيق فلتر التاريخ إن وُجد
+    let printDebts = debts;
+    if (printFrom) {
+      const from = new Date(printFrom + 'T00:00:00').getTime();
+      printDebts = printDebts.filter((d) => new Date(d.created_at).getTime() >= from);
+    }
+    if (printTo) {
+      const to = new Date(printTo + 'T23:59:59').getTime();
+      printDebts = printDebts.filter((d) => new Date(d.created_at).getTime() <= to);
+    }
+    const periodLabel = printFrom || printTo
+      ? `${printFrom ? 'من ' + printFrom : ''} ${printTo ? 'إلى ' + printTo : ''}`.trim()
+      : 'كامل السجل';
+    const opening = printDebts.length ? (Number(printDebts[0].balance_after) - Number(printDebts[0].debit) + Number(printDebts[0].credit)) : 0;
+    const totalDebit = printDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
+    const totalCredit = printDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
+    const closing = printDebts.length ? Number(printDebts[printDebts.length - 1].balance_after) : Number(c.balance || 0);
+    const rows = printDebts.map((d) => `
       <tr${d.reversed ? ' style="opacity:0.4"' : ''}>
         <td>${fmtDate(d.created_at)}</td>
         <td>${debtTypeLabel(d.type)}</td>
@@ -427,7 +464,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
       </style></head><body>
       <h1>نظام نقطة شحن أبو عادل</h1>
       <h2>كشف حساب: ${c.name}</h2>
-      <h3>تاريخ الكشف: ${fmtDate(new Date())}</h3>
+      <h3>تاريخ الكشف: ${fmtDate(new Date())} &nbsp;|&nbsp; الفترة: ${periodLabel}</h3>
       <div class="sum opening"><span>الرصيد الافتتاحي</span><span>${money(opening)}</span></div>
       <table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد</th></tr></thead>
       <tbody>${rows}</tbody></table>
@@ -443,11 +480,19 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
 
   const filteredDebts = typeFilter === 'all' ? debts : debts.filter((d) => d.type === typeFilter);
 
+  const totalChargingDebt = customers.reduce((s, c) => s + Math.max(0, c.charging_debt || 0), 0);
+  const totalDrinksDebt = customers.reduce((s, c) => s + Math.max(0, c.drinks_debt || 0), 0);
+
   return (
     <div className="space-y-5 animate-fade">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <SectionTitle icon={<Users size={24} />}>إدارة الديون والزبائن</SectionTitle>
         <button onClick={() => { setEditCust(null); setName(''); setPhone(''); setNotes(''); setCreditLimit('0'); setTrustLimit('0'); setIsVip(false); setJoinDate(new Date().toISOString().slice(0, 10)); setAddOpen(true); }} className="btn-primary"><Plus size={18} /> زبون جديد</button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Stat label="إجمالي ديون الشحن" value={money(totalChargingDebt)} color="sky" icon={<HandCoins size={18} className="text-sky-500" />} />
+        <Stat label="إجمالي ديون المشروبات" value={money(totalDrinksDebt)} color="amber" icon={<HandCoins size={18} className="text-amber-500" />} />
       </div>
 
       <div className="card overflow-hidden dark:bg-slate-900 dark:border-slate-700">
@@ -551,7 +596,13 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
         <div className="flex flex-wrap gap-2 mb-4">
           <button onClick={() => setPayOpen(true)} className="btn-success text-sm"><HandCoins size={16} /> تسديد دين</button>
           <button onClick={() => setManualOpen(true)} className="btn-ghost text-sm"><Plus size={16} /> حركة يدوية</button>
-          <button onClick={printStatement} className="btn-ghost text-sm"><Printer size={16} /> طباعة الكشف</button>
+          <button onClick={recalculateAllBalances} className="btn-ghost text-xs text-violet-600 dark:text-violet-400" title="إعادة حساب الرصيد التراكمي لجميع الزبائن"><RefreshCw size={14} /> إعادة الحساب</button>
+          <div className="flex items-center gap-1 flex-wrap">
+            <input type="date" className="input py-1.5 px-2 text-xs max-w-[130px] dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100" value={printFrom} onChange={(e) => setPrintFrom(e.target.value)} title="من تاريخ" />
+            <span className="text-xs text-slate-400">→</span>
+            <input type="date" className="input py-1.5 px-2 text-xs max-w-[130px] dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100" value={printTo} onChange={(e) => setPrintTo(e.target.value)} title="إلى تاريخ" />
+            <button onClick={printStatement} className="btn-ghost text-sm"><Printer size={16} /> طباعة الكشف</button>
+          </div>
         </div>
         {/* Opening + Closing balance summary */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
@@ -590,7 +641,25 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                     <td className="px-3 py-2 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">{fmtDateTime(d.created_at)}</td>
                     <td className="px-3 py-2"><Badge color={debtTypeColor(d.type)}>{debtTypeLabel(d.type)}</Badge></td>
                     <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
-                      <span className={d.source === 'invoice' ? 'text-amber-700 dark:text-amber-300 font-medium' : d.source === 'device' ? 'text-sky-700 dark:text-sky-300 font-medium' : ''}>{d.description || '—'}</span>
+                      {d.related_invoice_id ? (
+                        <button
+                          onClick={() => {
+                            const inv = db.first<any>('invoices', (r: any) => r.id === d.related_invoice_id);
+                            if (inv) {
+                              const items = db.select<any>('invoice_items').filter((it: any) => it.invoice_id === inv.id);
+                              setInvDetail({ inv, items });
+                            } else {
+                              setInvDetail({ inv: null, items: [] });
+                            }
+                          }}
+                          className="flex items-center gap-1 text-amber-700 dark:text-amber-300 font-medium hover:underline cursor-pointer"
+                        >
+                          <Eye size={13} />
+                          {d.description || '—'}
+                        </button>
+                      ) : (
+                        <span className={d.source === 'invoice' ? 'text-amber-700 dark:text-amber-300 font-medium' : d.source === 'device' ? 'text-sky-700 dark:text-sky-300 font-medium' : ''}>{d.description || '—'}</span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-rose-600 dark:text-rose-400 font-semibold">{d.debit ? money(d.debit) : '—'}</td>
                     <td className="px-3 py-2 text-emerald-600 dark:text-emerald-400 font-semibold">{d.credit ? money(d.credit) : '—'}</td>
@@ -610,19 +679,53 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
 
       <Modal open={payOpen} onClose={() => setPayOpen(false)} title="تسديد دين" size="md">
         <div className="space-y-3">
-          <div><label className="label">المبلغ *</label><input className="input text-xl font-bold" type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} autoFocus /></div>
+          {/* رصيد الزبون */}
+          {statement && (
+            <div className="grid grid-cols-3 gap-2 rounded-xl bg-slate-50 dark:bg-slate-800 p-3 text-center text-sm">
+              <div><p className="text-slate-400 text-xs">دين الشحن</p><p className="font-bold text-sky-600">{money(statement.charging_debt || 0)}</p></div>
+              <div><p className="text-slate-400 text-xs">دين المشروبات</p><p className="font-bold text-amber-600">{money(statement.drinks_debt || 0)}</p></div>
+              <div><p className="text-slate-400 text-xs">الإجمالي</p><p className="font-bold dark:text-slate-100">{money((statement.charging_debt || 0) + (statement.drinks_debt || 0))}</p></div>
+            </div>
+          )}
+
+          <div><label className="label">المبلغ المسدَّد *</label><input className="input text-xl font-bold" type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} autoFocus /></div>
+
           <div>
             <label className="label">طريقة التسديد</label>
             <div className="grid grid-cols-3 gap-2">
-              <button onClick={() => setPayMode('auto')} className={`py-2.5 rounded-xl font-bold text-sm ${payMode === 'auto' ? 'bg-sky-600 text-white' : 'bg-slate-100'}`}>تلقائي</button>
-              <button onClick={() => setPayMode('charging')} className={`py-2.5 rounded-xl font-bold text-sm ${payMode === 'charging' ? 'bg-sky-600 text-white' : 'bg-slate-100'}`}>شحن</button>
-              <button onClick={() => setPayMode('drinks')} className={`py-2.5 rounded-xl font-bold text-sm ${payMode === 'drinks' ? 'bg-sky-600 text-white' : 'bg-slate-100'}`}>مشروبات</button>
+              <button onClick={() => setPayMode('auto')} className={`py-2.5 rounded-xl font-bold text-sm transition ${payMode === 'auto' ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-200'}`}>تلقائي تناسبي</button>
+              <button onClick={() => setPayMode('charging')} className={`py-2.5 rounded-xl font-bold text-sm transition ${payMode === 'charging' ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-200'}`}>شحن فقط</button>
+              <button onClick={() => setPayMode('drinks')} className={`py-2.5 rounded-xl font-bold text-sm transition ${payMode === 'drinks' ? 'bg-amber-500 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-200'}`}>مشروبات فقط</button>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="label">حصة الشحن</label><input className="input" type="number" value={payCharging} onChange={(e) => setPayCharging(e.target.value)} /></div>
-            <div><label className="label">حصة المشروبات</label><input className="input" type="number" value={payDrinks} onChange={(e) => setPayDrinks(e.target.value)} /></div>
-          </div>
+
+          {/* معاينة التوزيع */}
+          {(() => {
+            const amt = Number(payAmount) || 0;
+            if (amt <= 0 || !statement) return null;
+            let cPart = 0, dPart = 0;
+            if (payMode === 'charging') { cPart = amt; }
+            else if (payMode === 'drinks') { dPart = amt; }
+            else { const s = computeAutoSplit(amt); cPart = s.chargingPart; dPart = s.drinksPart; }
+            return (
+              <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-600 p-3 space-y-1.5 text-sm">
+                <p className="font-bold text-slate-500 dark:text-slate-400 text-xs mb-2">توزيع الدفعة</p>
+                {cPart > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5 text-sky-700 dark:text-sky-300"><ArrowUpCircle size={14} /> صندوق الشحن + أرصدة الشركاء</span>
+                    <span className="font-bold text-sky-700 dark:text-sky-300">{money(cPart)}</span>
+                  </div>
+                )}
+                {dPart > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300"><ArrowUpCircle size={14} /> صندوق المشروبات</span>
+                    <span className="font-bold text-amber-700 dark:text-amber-300">{money(dPart)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           <div><label className="label">خصم (مسح جزء من الدين)</label><input className="input" type="number" value={payDiscount} onChange={(e) => setPayDiscount(e.target.value)} placeholder="0" /></div>
           <div><label className="label">ملاحظة</label><input className="input" value={payNote} onChange={(e) => setPayNote(e.target.value)} /></div>
         </div>
@@ -651,6 +754,92 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
           <button onClick={() => setManualOpen(false)} className="btn-ghost">إلغاء</button>
           <button onClick={submitManual} className="btn-primary">إضافة</button>
         </div>
+      </Modal>
+
+      {/* ── نافذة تفاصيل فاتورة المشروبات ── */}
+      <Modal open={!!invDetail} onClose={() => setInvDetail(null)} title="تفاصيل الفاتورة" size="lg">
+        {invDetail && (
+          invDetail.inv === null ? (
+            <p className="text-slate-500 dark:text-slate-400 text-center py-6">حركة يدوية/سابقة لا تحتوي على تفاصيل أصناف</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="card p-3 bg-slate-50 dark:bg-slate-800">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">رقم الفاتورة</p>
+                  <p className="font-bold text-slate-700 dark:text-slate-200 text-xs">{invDetail.inv.id?.slice(0, 8).toUpperCase()}</p>
+                </div>
+                <div className="card p-3 bg-slate-50 dark:bg-slate-800">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">التاريخ والوقت</p>
+                  <p className="font-bold text-slate-700 dark:text-slate-200 text-xs">{fmtDateTime(invDetail.inv.created_at)}</p>
+                </div>
+                <div className="card p-3 bg-sky-50 dark:bg-sky-900/20">
+                  <p className="text-xs text-sky-600 dark:text-sky-400 font-semibold">المجموع الكلي</p>
+                  <p className="font-extrabold text-sky-700 dark:text-sky-300">{money(invDetail.inv.total || invDetail.items.reduce((s: number, it: any) => s + Number(it.qty) * Number(it.sell_price || 0), 0))}</p>
+                </div>
+              </div>
+              {invDetail.items.length === 0 ? (
+                <p className="text-slate-400 text-center py-4 text-sm">لا توجد أصناف مسجلة لهذه الفاتورة</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-100 dark:border-slate-700">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs">
+                      <tr>
+                        <th className="text-right px-3 py-2 font-bold">#</th>
+                        <th className="text-right px-3 py-2 font-bold">اسم الصنف</th>
+                        <th className="text-right px-3 py-2 font-bold">الكمية</th>
+                        <th className="text-right px-3 py-2 font-bold">سعر القطعة</th>
+                        <th className="text-right px-3 py-2 font-bold">الإجمالي</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                      {invDetail.items.map((it: any, i: number) => {
+                        const qty = Number(it.qty) || 0;
+                        // دعم جميع أسماء حقل السعر المحتملة
+                        const rawPrice = Number(it.unit_price ?? it.sell_price ?? it.price ?? it.item_price ?? 0);
+                        const rawTotal = Number(it.line_total ?? it.total ?? 0);
+                        // Fallback للفواتير القديمة: سعر القطعة = إجمالي السطر ÷ الكمية
+                        const itemPrice = rawPrice > 0 ? rawPrice : (qty > 0 && rawTotal > 0 ? rawTotal / qty : 0);
+                        const itemTotal = rawTotal > 0 ? rawTotal : qty * itemPrice;
+                        return (
+                          <tr key={it.id}>
+                            <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                            <td className="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">{it.name}</td>
+                            <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{qty}</td>
+                            <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{money(itemPrice)}</td>
+                            <td className="px-3 py-2 font-bold text-slate-800 dark:text-slate-100">{money(itemTotal)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <button onClick={() => {
+                  const win = window.open('', '_blank');
+                  if (!win || !invDetail.inv) return;
+                  const rows = invDetail.items.map((it: any, i: number) => {
+                    const qty = Number(it.qty) || 0;
+                    const rawP = Number(it.unit_price ?? it.sell_price ?? it.price ?? 0);
+                    const rawT = Number(it.line_total ?? it.total ?? 0);
+                    const p = rawP > 0 ? rawP : (qty > 0 && rawT > 0 ? rawT / qty : 0);
+                    const t = rawT > 0 ? rawT : qty * p;
+                    return `<tr><td>${i+1}</td><td>${it.name}</td><td>${qty}</td><td>${p.toFixed(2)}</td><td style="font-weight:700">${t.toFixed(2)}</td></tr>`;
+                  }).join('');
+                  const total = invDetail.items.reduce((s: number, it: any) => {
+                    const qty = Number(it.qty) || 0;
+                    const rawT = Number(it.line_total ?? it.total ?? 0);
+                    const rawP = Number(it.unit_price ?? it.sell_price ?? it.price ?? 0);
+                    return s + (rawT > 0 ? rawT : qty * rawP);
+                  }, 0);
+                  win.document.write(`<html dir="rtl"><head><meta charset="utf-8"><title>فاتورة</title><style>body{font-family:Arial;padding:20px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 8px;border-bottom:1px solid #e2e8f0;text-align:right}th{background:#f1f5f9;font-weight:700}.tot{margin-top:12px;font-weight:800;font-size:16px;text-align:left}</style></head><body><h2>نظام نقطة شحن أبو عادل — فاتورة مشروبات</h2><p><b>رقم الفاتورة:</b> ${invDetail.inv.id?.slice(0,8).toUpperCase()} &nbsp; <b>التاريخ:</b> ${fmtDateTime(invDetail.inv.created_at)}</p><table><thead><tr><th>#</th><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table><div class="tot">الإجمالي الكلي: ${total.toFixed(2)} ₪</div></body></html>`);
+                  win.document.close(); win.print();
+                }} className="btn-ghost text-sm"><Printer size={15} /> طباعة</button>
+                <button onClick={() => setInvDetail(null)} className="btn-primary text-sm">إغلاق</button>
+              </div>
+            </div>
+          )
+        )}
       </Modal>
 
       <Modal open={!!deleteCust} onClose={() => setDeleteCust(null)} title="حذف زبون" size="sm">

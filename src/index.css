@@ -104,17 +104,26 @@ body {
 .landscape-force {
   transform: rotate(90deg);
   transform-origin: top left;
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 100vw;
   height: 100vw;
   width: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
   max-width: 100vh;
 }
 
 @media (min-width: 1024px) {
-  .landscape-force { transform: none; position: static; height: auto; width: 100%; max-width: 100%; }
+  /* On desktop landscape-force is a no-op — the layout already adapts */
+  .landscape-force {
+    transform: none;
+    position: static;
+    height: auto;
+    width: 100%;
+    max-width: 100%;
+    overflow: visible;
+  }
 }
 
 @media screen and (orientation: landscape) and (max-width: 1023px) {

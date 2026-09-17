@@ -105,9 +105,9 @@ export default function Inventory() {
 
   const deleteItem = (i: InventoryItem) => {
     const warnings: string[] = [];
-    const movesCount = db.select<any>('inventory_moves', (r) => r.inventory_item_id === i.id).length;
+    const movesCount = db.selectWhere<any>('inventory_moves', (r) => r.inventory_item_id === i.id).length;
     if (movesCount > 0) warnings.push(`مرتبط بـ ${movesCount} حركة مخزون`);
-    const invoiceItemsCount = db.select<any>('supplier_invoice_items', (r) => r.inventory_item_id === i.id).length;
+    const invoiceItemsCount = db.selectWhere<any>('supplier_invoice_items', (r) => r.inventory_item_id === i.id).length;
     if (invoiceItemsCount > 0) warnings.push(`مرتبط بـ ${invoiceItemsCount} بند فاتورة مورد`);
     const linkedProduct = db.first<any>('products', (r) => r.name === i.name);
     if (linkedProduct) warnings.push('مرتبط بمنتج في قسم المشروبات بنفس الاسم');
