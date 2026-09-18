@@ -145,7 +145,7 @@ export default function Reports() {
                 <tr><th className="text-right px-3 py-2 font-bold">التاريخ</th><th className="text-right px-3 py-2 font-bold">الصندوق</th><th className="text-right px-3 py-2 font-bold">النوع</th><th className="text-right px-3 py-2 font-bold">المبلغ</th><th className="text-right px-3 py-2 font-bold">السبب</th></tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {data.cashLedger.map((l: any) => (
+                {data.cashLedger.slice(0, 50).map((l: any) => (
                   <tr key={l.id}>
                     <td className="px-3 py-2 text-slate-500 text-xs">{fmtDate(l.created_at)}</td>
                     <td className="px-3 py-2 font-semibold">{l.box?.name || '—'}</td>

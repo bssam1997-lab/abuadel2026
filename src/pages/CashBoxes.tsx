@@ -268,7 +268,7 @@ export default function CashBoxes() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                {ledger.map((l) => (
+                {ledger.slice(0, 50).map((l) => (
                   <tr key={l.id} className="table-row dark:hover:bg-slate-700/40">
                     <td className="px-3 py-2 text-slate-500 dark:text-slate-400 text-xs">{fmtDateTime(l.created_at)}</td>
                     <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">{l.box?.name || '—'}</td>
