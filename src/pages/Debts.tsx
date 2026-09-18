@@ -4,6 +4,7 @@ import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
 import { money, fmtDateTime, fmtDate } from '../lib/format';
+import { useDebouncedValue } from '../lib/hooks';
 import Modal from '../components/Modal';
 import { SectionTitle, Badge, EmptyState, Stat } from '../components/ui';
 
@@ -49,6 +50,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   const [invDetail, setInvDetail] = useState<{ inv: any; items: any[] } | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearch = useDebouncedValue(searchQuery, 250);
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -528,7 +530,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
                 {customers
                   .filter((c) => {
-                    const q = searchQuery.trim().toLowerCase();
+                    const q = debouncedSearch.trim().toLowerCase();
                     if (!q) return true;
                     return (
                       (c.name || '').toLowerCase().includes(q) ||

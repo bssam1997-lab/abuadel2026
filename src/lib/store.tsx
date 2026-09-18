@@ -63,10 +63,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    db.initDatabase();
-    refreshUsers();
-    refreshSettings();
-    setLoading(false);
+    let cancelled = false;
+    db.initDatabaseAsync().then(() => {
+      if (cancelled) return;
+      refreshUsers();
+      refreshSettings();
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [refreshUsers, refreshSettings]);
 
   return (

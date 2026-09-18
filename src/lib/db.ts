@@ -1,7 +1,9 @@
 // ============================================================
 // نظام نقطة شحن أبو عادل — طبقة قاعدة البيانات المحلية
-// LocalStorage-based offline database (no external services)
+// IndexedDB-backed offline database (via storage.ts engine)
 // ============================================================
+
+import { getItemSync, setItemSync, hydrateStore, isHydrated } from './storage';
 
 // كل الجداول في النظام
 export type TableName =
@@ -39,8 +41,11 @@ const STORAGE_PREFIX = 'npa_'; // نقطة شحن أبو عادل
 // المفتاح المستخدم لحفظ كل جدول
 const tableKey = (t: TableName) => `${STORAGE_PREFIX}${t}`;
 
-// قراءة جدول كامل من LocalStorage
+// قراءة جدول كامل من التخزين (IndexedDB via memory cache)
 function readTable<T = any>(t: TableName): T[] {
+  const cached = getItemSync<T[]>(tableKey(t));
+  if (cached) return cached;
+  // Fallback: try localStorage directly (pre-hydration safety net)
   try {
     const raw = localStorage.getItem(tableKey(t));
     return raw ? JSON.parse(raw) : [];
@@ -49,9 +54,9 @@ function readTable<T = any>(t: TableName): T[] {
   }
 }
 
-// كتابة جدول كامل إلى LocalStorage
+// كتابة جدول كامل إلى التخزين (IndexedDB + memory cache + localStorage mirror)
 function writeTable<T = any>(t: TableName, rows: T[]): void {
-  localStorage.setItem(tableKey(t), JSON.stringify(rows));
+  setItemSync(tableKey(t), rows);
 }
 
 // توليد معرف فريد
@@ -172,6 +177,13 @@ export function logAction(action: string, entity?: string, entityId?: string, va
 // ============================================================
 // التهيئة الأولية (Seed)
 // ============================================================
+
+/** Async init: hydrate from IndexedDB, then seed defaults */
+export async function initDatabaseAsync(): Promise<void> {
+  await hydrateStore();
+  initDatabase();
+}
+
 export function initDatabase(): void {
   // الإعدادات الافتراضية
   const defaultSettings: Record<string, string> = {
