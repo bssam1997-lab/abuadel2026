@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye } from 'lucide-react';
+import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye, ChevronRight, ChevronLeft } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
@@ -52,6 +52,10 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearch = useDebouncedValue(searchQuery, 250);
 
+  // ترقيم صفحات زبائن
+  const [custPageSize, setCustPageSize] = useState<number>(25);
+  const [custPage, setCustPage] = useState(0);
+
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [notes, setNotes] = useState('');
@@ -73,6 +77,8 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   // فلتر الطباعة بالتاريخ
   const [printFrom, setPrintFrom] = useState('');
   const [printTo, setPrintTo] = useState('');
+  const [stmtPageSize, setStmtPageSize] = useState<number>(25);
+  const [stmtPage, setStmtPage] = useState(0);
 
   const load = () => {
     const all = db.select<any>('customers').sort((a, b) => a.name.localeCompare(b.name, 'ar'));
@@ -482,6 +488,36 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
 
   const filteredDebts = typeFilter === 'all' ? debts : debts.filter((d) => d.type === typeFilter);
 
+  const filteredCustomers = useMemo(() => {
+    const q = debouncedSearch.trim().toLowerCase();
+    if (!q) return customers;
+    return customers.filter((c) =>
+      (c.name || '').toLowerCase().includes(q) ||
+      (c.phone || '').toLowerCase().includes(q) ||
+      (c.notes || '').toLowerCase().includes(q)
+    );
+  }, [customers, debouncedSearch]);
+
+  const custTotalPages = custPageSize === 0 ? 1 : Math.ceil(filteredCustomers.length / custPageSize);
+  const safeCustPage = Math.min(custPage, Math.max(0, custTotalPages - 1));
+  const pagedCustomers = useMemo(() => {
+    if (custPageSize === 0) return filteredCustomers;
+    return filteredCustomers.slice(safeCustPage * custPageSize, safeCustPage * custPageSize + custPageSize);
+  }, [filteredCustomers, safeCustPage, custPageSize]);
+
+  // إعادة تعيين الصفحة عند تغيير البحث أو حجم الصفحة
+  useEffect(() => { setCustPage(0); }, [debouncedSearch, custPageSize]);
+
+  // كشف الحساب: عرض تنازلي + ترقيم صفحات
+  const displayDebts = useMemo(() => [...filteredDebts].reverse(), [filteredDebts]);
+  const stmtTotalPages = stmtPageSize === 0 ? 1 : Math.ceil(displayDebts.length / stmtPageSize);
+  const safeStmtPage = Math.min(stmtPage, Math.max(0, stmtTotalPages - 1));
+  const pagedDisplayDebts = useMemo(() => {
+    if (stmtPageSize === 0) return displayDebts;
+    return displayDebts.slice(safeStmtPage * stmtPageSize, safeStmtPage * stmtPageSize + stmtPageSize);
+  }, [displayDebts, safeStmtPage, stmtPageSize]);
+  useEffect(() => { setStmtPage(0); }, [typeFilter, stmtPageSize, statement?.id]);
+
   const totalChargingDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.charging_debt || 0), 0), [customers]);
   const totalDrinksDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.drinks_debt || 0), 0), [customers]);
 
@@ -528,17 +564,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                {customers
-                  .filter((c) => {
-                    const q = debouncedSearch.trim().toLowerCase();
-                    if (!q) return true;
-                    return (
-                      (c.name || '').toLowerCase().includes(q) ||
-                      (c.phone || '').toLowerCase().includes(q) ||
-                      (c.notes || '').toLowerCase().includes(q)
-                    );
-                  })
-                  .slice(0, 50)
+                {pagedCustomers
                   .map((c) => (
                   <tr key={c.id} className="table-row dark:text-slate-200">
                     <td className="px-4 py-3 font-semibold">
@@ -566,6 +592,22 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                 ))}
               </tbody>
             </table>
+          </div>
+          {/* ترقيم صفحات الزبائن */}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 border-t border-slate-100 dark:border-slate-700">
+            <div className="flex items-center gap-1">
+              {([25, 50, 100, 0] as const).map((n) => (
+                <button key={n} onClick={() => setCustPageSize(n)} className={`px-2.5 py-1 rounded-lg text-xs font-bold ${custPageSize === n ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-300'}`}>{n === 0 ? 'الكل' : n}</button>
+              ))}
+            </div>
+            {custPageSize > 0 && filteredCustomers.length > custPageSize && (
+              <div className="flex items-center gap-1">
+                <button onClick={() => setCustPage(Math.max(0, safeCustPage - 1))} disabled={safeCustPage === 0} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"><ChevronRight size={18} /></button>
+                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{safeCustPage + 1} / {custTotalPages}</span>
+                <button onClick={() => setCustPage(Math.min(custTotalPages - 1, safeCustPage + 1))} disabled={safeCustPage >= custTotalPages - 1} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"><ChevronLeft size={18} /></button>
+              </div>
+            )}
+            <span className="text-xs text-slate-400 mr-auto">إجمالي: {filteredCustomers.length} زبون</span>
           </div>
           </>
         )}
@@ -625,6 +667,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
         {filteredDebts.length === 0 ? (
           <EmptyState title="لا توجد حركات" />
         ) : (
+          <>
           <div className="overflow-x-auto rounded-xl border border-slate-100 dark:border-slate-700">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs">
@@ -639,7 +682,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                {filteredDebts.slice(0, 50).map((d) => (
+                {pagedDisplayDebts.map((d) => (
                   <tr key={d.id} className={`table-row dark:text-slate-200 ${d.reversed ? 'opacity-40' : ''}`}>
                     <td className="px-3 py-2 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">{fmtDateTime(d.created_at)}</td>
                     <td className="px-3 py-2"><Badge color={debtTypeColor(d.type)}>{debtTypeLabel(d.type)}</Badge></td>
@@ -677,6 +720,23 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
               </tbody>
             </table>
           </div>
+          {/* ترقيم صفحات كشف الحساب */}
+          <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
+            <div className="flex items-center gap-1">
+              {([25, 50, 100, 0] as const).map((n) => (
+                <button key={n} onClick={() => setStmtPageSize(n)} className={`px-2.5 py-1 rounded-lg text-xs font-bold ${stmtPageSize === n ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-300'}`}>{n === 0 ? 'كامل السجل' : n}</button>
+              ))}
+            </div>
+            {stmtPageSize > 0 && displayDebts.length > stmtPageSize && (
+              <div className="flex items-center gap-1">
+                <button onClick={() => setStmtPage(Math.max(0, safeStmtPage - 1))} disabled={safeStmtPage === 0} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"><ChevronRight size={18} /></button>
+                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{safeStmtPage + 1} / {stmtTotalPages}</span>
+                <button onClick={() => setStmtPage(Math.min(stmtTotalPages - 1, safeStmtPage + 1))} disabled={safeStmtPage >= stmtTotalPages - 1} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"><ChevronLeft size={18} /></button>
+              </div>
+            )}
+            <span className="text-xs text-slate-400 mr-auto">{displayDebts.length} حركة</span>
+          </div>
+          </>
         )}
       </Modal>
 

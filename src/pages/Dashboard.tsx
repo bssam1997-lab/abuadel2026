@@ -32,7 +32,7 @@ type Period = 'today' | 'week' | 'month' | 'custom';
 
 export default function Dashboard() {
   const [period, setPeriod] = useState<Period>('today');
-  const [custom, setCustom] = useState({ from: '', to: '' });
+  const [custom, setCustom] = useState({ from: new Date().toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) });
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [popup, setPopup] = useState<null | { title: string; rows: { label: string; value: string; color: string }[] }>(null);

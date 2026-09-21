@@ -3,13 +3,22 @@
 // يخزن كل الأصول مؤقتاً للعمل بدون إنترنت
 // ============================================================
 
-const CACHE_NAME = 'npa-cache-v1';
+const CACHE_NAME = 'npa-cache-v2';
 const PRECACHE = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
+  './fonts/cairo-arabic-400-normal.woff2',
+  './fonts/cairo-arabic-500-normal.woff2',
+  './fonts/cairo-arabic-600-normal.woff2',
+  './fonts/cairo-arabic-700-normal.woff2',
+  './fonts/cairo-arabic-800-normal.woff2',
+  './fonts/tajawal-arabic-400-normal.woff2',
+  './fonts/tajawal-arabic-500-normal.woff2',
+  './fonts/tajawal-arabic-700-normal.woff2',
+  './fonts/tajawal-arabic-800-normal.woff2',
 ];
 
 // تثبيت: تخزين الأصول الأساسية

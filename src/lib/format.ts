@@ -53,7 +53,15 @@ export const periodRange = (period: 'today' | 'week' | 'month' | 'custom', custo
   if (period === 'week') return { from: startOfWeek(), to: new Date().toISOString() };
   if (period === 'month') return { from: startOfMonth(), to: new Date().toISOString() };
   if (period === 'custom' && custom) {
-    return { from: new Date(custom.from).toISOString(), to: new Date(custom.to + 'T23:59:59').toISOString() };
+    const today = todayISO();
+    const fromStr = custom.from || today.slice(0, 10);
+    const toStr = custom.to || today.slice(0, 10);
+    const from = new Date(fromStr);
+    const to = new Date(toStr + 'T23:59:59');
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+      return { from: todayISO(), to: new Date().toISOString() };
+    }
+    return { from: from.toISOString(), to: to.toISOString() };
   }
   return { from: todayISO(), to: new Date().toISOString() };
 };

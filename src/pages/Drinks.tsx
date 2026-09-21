@@ -73,6 +73,7 @@ export default function Drinks() {
   const loadProducts = () => setProducts(db.select<Product>('products').sort((a, b) => a.name.localeCompare(b.name, 'ar')));
   const loadGroups = () => setDiscountGroups(db.select<DiscountGroup>('discount_groups').sort((a, b) => a.name.localeCompare(b.name, 'ar')));
   const [invSearch, setInvSearch] = useState('');
+  const [invLimit, setInvLimit] = useState<number>(20);
 
   const loadInvoices = () => {
     const all = db.select<any>('invoices').sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
@@ -813,6 +814,13 @@ export default function Drinks() {
             {invSearch.trim() && (
               <p className="text-xs text-slate-400 mt-1.5">{filteredInvoices.length} نتيجة من أصل {invoices.length} فاتورة</p>
             )}
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-slate-400">عرض:</span>
+              {([20, 50, 100, 0] as const).map((n) => (
+                <button key={n} onClick={() => setInvLimit(n)} className={`px-2.5 py-1 rounded-lg text-xs font-bold ${invLimit === n ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-300'}`}>{n === 0 ? 'الكل' : n}</button>
+              ))}
+              <span className="text-xs text-slate-400 mr-auto">{filteredInvoices.length} فاتورة</span>
+            </div>
           </div>
           {filteredInvoices.length === 0 ? (
             <EmptyState icon={<CupSoda size={36} />} title={invSearch.trim() ? 'لا توجد نتائج للبحث' : 'لا توجد فواتير'} />
@@ -832,7 +840,7 @@ export default function Drinks() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                  {filteredInvoices.slice(0, 50).map((inv) => {
+                  {filteredInvoices.slice(0, invLimit === 0 ? undefined : invLimit).map((inv) => {
                     const cust = inv.customer_id ? db.first<any>('customers', (r) => r.id === inv.customer_id) : null;
                     const items = db.select<any>('invoice_items').filter((i) => i.invoice_id === inv.id);
                     const isOpen = expandedInv === inv.id;

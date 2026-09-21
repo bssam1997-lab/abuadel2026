@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, BatteryCharging, CupSoda, Users, Settings, Wallet,
   Boxes, Truck, UserCheck, FileBarChart, Database, Menu, LogOut,
-  Lock, ChevronDown, Zap, RotateCw, Moon, Sun, X, Sliders
+  Lock, ChevronDown, Zap, RotateCw, Moon, Sun, X, Sliders, Undo2
 } from 'lucide-react';
 import { StoreProvider, useStore } from './lib/store';
 import * as db from './lib/db';
@@ -97,6 +97,86 @@ function Shell() {
     setPage('dashboard');
   };
 
+  const undoLastOperation = () => {
+    const logs = db.select<any>('operation_log').sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    if (logs.length === 0) { push('لا توجد عمليات للتراجع عنها', 'error'); return; }
+    const last = logs[0];
+    if (last.action === 'check_in_device' || last.action === 'add_device' || last.action === 'add_customer') {
+      if (last.entity && last.entity_id) {
+        db.removeById(last.entity as any, last.entity_id);
+        db.removeById('operation_log', last.id);
+        push('تم التراجع عن آخر عملية (حذف الإضافة)', 'success');
+      }
+    } else if (last.before_state && last.entity && last.entity_id) {
+      db.updateById(last.entity as any, last.entity_id, last.before_state);
+      db.removeById('operation_log', last.id);
+      push('تم التراجع عن آخر عملية (استعادة الحالة السابقة)', 'success');
+    } else if (last.action === 'deliver_device' && last.entity_id) {
+      const dev = db.first<any>('devices', (r: any) => r.id === last.entity_id);
+      if (dev) {
+        db.updateById('devices', dev.id, { status: 'charging', check_out_at: null, checkout_charge_level: null });
+        if (dev.paid) {
+          const box = db.first<any>('cash_boxes', (r: any) => r.code === 'charging');
+          if (box) {
+            db.updateById('cash_boxes', box.id, { balance: Number(box.balance) - Number(dev.price) });
+            db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'out', amount: Number(dev.price), reason: `تراجع عن تسليم: ${dev.device_type}`, created_at: db.now() });
+          }
+        } else if (dev.customer_id) {
+          const debt = db.first<any>('debts', (r: any) => r.related_device_id === dev.id);
+          if (debt) db.updateById('debts', debt.id, { reversed: true });
+        }
+        db.removeById('operation_log', last.id);
+        push('تم التراجع عن تسليم الجهاز', 'success');
+      }
+    } else if (last.action === 'cancel_device' && last.entity_id) {
+      db.updateById('devices', last.entity_id, { status: 'charging', check_out_at: null, cancel_reason: null });
+      db.removeById('operation_log', last.id);
+      push('تم التراجع عن إلغاء الجهاز', 'success');
+    } else if (last.action === 'create_invoice' && last.entity_id) {
+      const inv = db.first<any>('invoices', (r: any) => r.id === last.entity_id);
+      if (inv) {
+        // Restore stock
+        const items = db.select<any>('invoice_items').filter((i: any) => i.invoice_id === inv.id);
+        items.forEach((i: any) => {
+          const prod = db.first<any>('products', (r: any) => r.id === i.product_id);
+          if (prod) db.updateById('products', prod.id, { quantity: Number(prod.quantity) + Number(i.qty) });
+          db.removeById('invoice_items', i.id);
+        });
+        // Reverse cash
+        if (Number(inv.paid_amount) > 0) {
+          const box = db.first<any>('cash_boxes', (r: any) => r.code === 'drinks');
+          if (box) {
+            db.updateById('cash_boxes', box.id, { balance: Number(box.balance) - Number(inv.paid_amount) });
+            db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'out', amount: Number(inv.paid_amount), reason: `تراجع عن فاتورة: ${inv.id.slice(0, 6)}`, related_id: inv.id, created_at: db.now() });
+          }
+        }
+        // Reverse debt
+        const debt = db.first<any>('debts', (r: any) => r.related_invoice_id === inv.id);
+        if (debt) db.updateById('debts', debt.id, { reversed: true });
+        db.removeById('invoices', inv.id);
+        db.removeById('operation_log', last.id);
+        push('تم التراجع عن إنشاء الفاتورة', 'success');
+      }
+    } else if (last.action === 'pay_debt' && last.entity_id) {
+      const debt = db.first<any>('debts', (r: any) => r.id === last.entity_id);
+      if (debt) {
+        const reversedCredit = Number(debt.credit);
+        if (reversedCredit > 0) {
+          const box = db.first<any>('cash_boxes', (r: any) => r.code === 'daily_debts');
+          if (box) {
+            db.updateById('cash_boxes', box.id, { balance: Number(box.balance) - reversedCredit });
+            db.insert('cash_box_ledger', { cash_box_id: box.id, type: 'out', amount: reversedCredit, reason: `تراجع عن تسديد دين: ${debt.id.slice(0, 6)}`, related_id: debt.id, created_at: db.now() });
+          }
+        }
+        db.updateById('debts', debt.id, { reversed: true });
+        db.removeById('operation_log', last.id);
+        push('تم التراجع عن تسديد الدين', 'success');
+      }
+    } else {
+      push(`التراجع عن "${last.action}" غير مدعوم تلقائياً`, 'error');
+    }
+  };
+
   const requirePin = (action: () => void) => {
     if (!settings.debt_lock_pin) {
       setPinMode('create');
@@ -134,6 +214,13 @@ function Shell() {
     setOrientation(next);
     db.setSetting('orientation', next);
     refreshSettings();
+    try {
+      if (next === 'landscape' && screen.orientation) {
+        screen.orientation.lock('landscape').catch(() => {});
+      } else if (next === 'portrait' && screen.orientation) {
+        screen.orientation.lock('portrait').catch(() => {});
+      }
+    } catch { /* iOS Safari — CSS rotation handles it */ }
   };
 
   const toggleDark = () => {
@@ -302,6 +389,9 @@ function Shell() {
             <div className="flex items-center gap-1.5 shrink-0">
               <button onClick={toggleDark} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400" title="الوضع المظلم">
                 {dark ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+              <button onClick={undoLastOperation} className="p-2 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 text-amber-600 dark:text-amber-400" title="تراجع عن آخر عملية">
+                <Undo2 size={18} />
               </button>
               <button onClick={toggleOrientation} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400" title="قلب الواجهة">
                 <RotateCw size={18} />
