@@ -46,6 +46,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   const [manualOpen, setManualOpen] = useState(false);
   const [deleteCust, setDeleteCust] = useState<any | null>(null);
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [sectionFilter, setSectionFilter] = useState<'all' | 'charging' | 'drinks'>('all');
   const [payMode, setPayMode] = useState<'charging' | 'drinks' | 'auto'>('auto');
   const [invDetail, setInvDetail] = useState<{ inv: any; items: any[] } | null>(null);
 
@@ -216,6 +217,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
         balance_after: Number(d.balance_after) || 0,
         reversed: !!d.reversed,
         related_invoice_id: d.related_invoice_id || null,
+        related_device_id: d.related_device_id || null,
       }));
   };
 
@@ -486,7 +488,18 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     win.print();
   };
 
-  const filteredDebts = typeFilter === 'all' ? debts : debts.filter((d) => d.type === typeFilter);
+  const chargingTypes = ['charging', 'trust'];
+  const drinksTypes = ['drinks'];
+  const sectionFilteredDebts = useMemo(() => {
+    if (sectionFilter === 'all') return debts;
+    if (sectionFilter === 'charging') return debts.filter((d) => chargingTypes.includes(d.type));
+    return debts.filter((d) => drinksTypes.includes(d.type));
+  }, [debts, sectionFilter]);
+  const filteredDebts = useMemo(() => {
+    let base = sectionFilteredDebts;
+    if (typeFilter !== 'all') base = base.filter((d) => d.type === typeFilter);
+    return base;
+  }, [sectionFilteredDebts, typeFilter]);
 
   const filteredCustomers = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
@@ -509,14 +522,67 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   useEffect(() => { setCustPage(0); }, [debouncedSearch, custPageSize]);
 
   // كشف الحساب: عرض تنازلي + ترقيم صفحات
-  const displayDebts = useMemo(() => [...filteredDebts].reverse(), [filteredDebts]);
+  // تجميع الأجهزة من نفس النوع في سطر واحد (شحن: جوال ×4 = 4 ₪)
+  const displayDebts = useMemo(() => {
+    const asc = [...filteredDebts].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    // ابحث عن قيود شحن الأجهزة بنفس النوع في نفس الدقيقة لتجميعها
+    const grouped: any[] = [];
+    let i = 0;
+    while (i < asc.length) {
+      const d = asc[i];
+      // قيد شحن جهاز له related_device_id
+      if (d.type === 'charging' && d.related_device_id && d.debit > 0 && !d.reversed) {
+        // استخرج نوع الجهاز من الوصف: "شحن: جوال" → "جوال"
+        const m = (d.description || '').match(/^شحن:\s*(.+)$/);
+        const deviceType = m ? m[1] : (d.description || '');
+        // اجمع كل القيود المتتالية بنفس النوع ونفس الدقيقة (نفس العملية)
+        const minuteKey = (d.created_at || '').slice(0, 16);
+        const group: any[] = [d];
+        let j = i + 1;
+        while (j < asc.length) {
+          const next = asc[j];
+          if (next.type === 'charging' && next.related_device_id && next.debit > 0 && !next.reversed) {
+            const nm = (next.description || '').match(/^شحن:\s*(.+)$/);
+            const nextDeviceType = nm ? nm[1] : (next.description || '');
+            const nextMinuteKey = (next.created_at || '').slice(0, 16);
+            if (nextDeviceType === deviceType && nextMinuteKey === minuteKey) {
+              group.push(next);
+              j++;
+              continue;
+            }
+          }
+          break;
+        }
+        if (group.length > 1) {
+          // أنشئ سطراً مجمّعاً
+          const totalDebit = group.reduce((s, g) => s + Number(g.debit), 0);
+          grouped.push({
+            ...d,
+            id: `grp_${d.id}`,
+            _isGroup: true,
+            _groupIds: group.map((g) => g.id),
+            _groupCount: group.length,
+            description: `شحن ${deviceType} (عدد ${group.length})`,
+            debit: totalDebit,
+          });
+        } else {
+          grouped.push(d);
+        }
+        i = j;
+      } else {
+        grouped.push(d);
+        i++;
+      }
+    }
+    return grouped.reverse();
+  }, [filteredDebts]);
   const stmtTotalPages = stmtPageSize === 0 ? 1 : Math.ceil(displayDebts.length / stmtPageSize);
   const safeStmtPage = Math.min(stmtPage, Math.max(0, stmtTotalPages - 1));
   const pagedDisplayDebts = useMemo(() => {
     if (stmtPageSize === 0) return displayDebts;
     return displayDebts.slice(safeStmtPage * stmtPageSize, safeStmtPage * stmtPageSize + stmtPageSize);
   }, [displayDebts, safeStmtPage, stmtPageSize]);
-  useEffect(() => { setStmtPage(0); }, [typeFilter, stmtPageSize, statement?.id]);
+  useEffect(() => { setStmtPage(0); }, [typeFilter, stmtPageSize, statement?.id, sectionFilter]);
 
   const totalChargingDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.charging_debt || 0), 0), [customers]);
   const totalDrinksDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.drinks_debt || 0), 0), [customers]);
@@ -649,13 +715,28 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
             <button onClick={printStatement} className="btn-ghost text-sm"><Printer size={16} /> طباعة الكشف</button>
           </div>
         </div>
-        {/* Opening + Closing balance summary */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-          <div className="card p-3 bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">رصيد افتتاحي</p><p className="font-bold text-slate-700 dark:text-slate-200">{money(debts.length ? (debts[0].balance_after - debts[0].debit + debts[0].credit) : 0)}</p></div>
-          <div className="card p-3 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800"><p className="text-xs text-rose-600 dark:text-rose-400 font-semibold">إجمالي المدين</p><p className="font-bold text-rose-700 dark:text-rose-300">{money(debts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0))}</p></div>
-          <div className="card p-3 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-800"><p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">إجمالي المدفوع</p><p className="font-bold text-emerald-700 dark:text-emerald-300">{money(debts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0))}</p></div>
-          <div className="card p-3 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800"><p className="text-xs text-sky-600 dark:text-sky-400 font-semibold">الرصيد الحالي</p><p className="font-bold text-sky-700 dark:text-sky-300">{money(debts.length ? debts[debts.length - 1].balance_after : (statement?.balance || 0))}</p></div>
+        {/* فلاتر القسم: الكل / شحن / مشروبات */}
+        <div className="flex gap-1.5 mb-3">
+          {([['all', 'الكل'], ['charging', 'شحن فقط'], ['drinks', 'مشروبات فقط']] as const).map(([val, label]) => (
+            <button key={val} onClick={() => setSectionFilter(val)} className={`px-3.5 py-1.5 rounded-lg text-sm font-bold transition ${sectionFilter === val ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-300'}`}>{label}</button>
+          ))}
         </div>
+        {/* Opening + Closing balance summary — ديناميكي حسب التصفية */}
+        {(() => {
+          const fDebts = [...filteredDebts].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+          const opening = fDebts.length ? (fDebts[0].balance_after - fDebts[0].debit + fDebts[0].credit) : 0;
+          const totalDebit = fDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
+          const totalCredit = fDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
+          const closing = fDebts.length ? fDebts[fDebts.length - 1].balance_after : (statement?.balance || 0);
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+              <div className="card p-3 bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">رصيد افتتاحي</p><p className="font-bold text-slate-700 dark:text-slate-200">{money(opening)}</p></div>
+              <div className="card p-3 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800"><p className="text-xs text-rose-600 dark:text-rose-400 font-semibold">إجمالي المدين</p><p className="font-bold text-rose-700 dark:text-rose-300">{money(totalDebit)}</p></div>
+              <div className="card p-3 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-800"><p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">إجمالي المدفوع</p><p className="font-bold text-emerald-700 dark:text-emerald-300">{money(totalCredit)}</p></div>
+              <div className="card p-3 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800"><p className="text-xs text-sky-600 dark:text-sky-400 font-semibold">الرصيد الحالي</p><p className="font-bold text-sky-700 dark:text-sky-300">{money(closing)}</p></div>
+            </div>
+          );
+        })()}
         <div className="flex items-center gap-2 mb-3">
           <Filter size={16} className="text-slate-400 dark:text-slate-500" />
           <select className="input max-w-48 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
