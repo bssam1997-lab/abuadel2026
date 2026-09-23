@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye, ChevronRight, ChevronLeft, Send } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
@@ -197,6 +197,19 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
   const openStatement = (c: any) => {
     setStatement(c);
     setDebts(buildUnifiedStatement(c.id));
+  };
+
+  const sendSms = (c: any) => {
+    if (!c.phone) {
+      push('يرجى إدخال رقم هاتف الزبون أولاً لإرسال الرسالة', 'error');
+      return;
+    }
+    const template = db.getSetting('sms_template', `السيد/ة : {customer_name}\nالمستحق عليكم :\nنقطة شحن أبو عادل : {total_debt} شيكل\nللدفع عبر البنك/المحفظة/جوال بي :\nبسام محمد حجازي\n0598838108\nشكرًا لثقتكم`);
+    const msg = template
+      .replace(/\{customer_name\}/g, c.name || '')
+      .replace(/\{total_debt\}/g, String(Math.max(0, Math.round(c.balance || 0))));
+    const phone = c.phone.replace(/[\s\-+]/g, '');
+    window.location.href = `sms:${phone}?body=${encodeURIComponent(msg)}`;
   };
 
   // كشف الحساب يقرأ من جدول debts فقط — المصدر الوحيد للحقيقة المالية
@@ -649,6 +662,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
                     <td className="px-4 py-3">
                       <div className="flex gap-1">
                         <button onClick={() => openStatement(c)} className="p-1.5 rounded-lg text-sky-600 hover:bg-sky-50" title="كشف حساب"><FileText size={16} /></button>
+                        <button onClick={() => sendSms(c)} className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30" title="إرسال رسالة مطالبة"><Send size={16} /></button>
                         <button onClick={() => { setEditCust(c); setName(c.name); setPhone(c.phone || ''); setNotes(c.notes || ''); setCreditLimit(String(c.credit_limit)); setTrustLimit(String(c.trust_limit || 0)); setIsVip(c.is_vip); setAddOpen(true); }} className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100" title="تعديل"><Pencil size={16} /></button>
                         <button onClick={() => toggleLock(c)} className={`p-1.5 rounded-lg hover:bg-slate-100 ${c.debt_locked ? 'text-rose-500' : 'text-slate-400'}`} title="قفل المديونية">{c.debt_locked ? <Lock size={16} /> : <Unlock size={16} />}</button>
                         <button onClick={() => setDeleteCust(c)} className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50" title="حذف الزبون"><Trash2 size={16} /></button>

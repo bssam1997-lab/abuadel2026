@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings as SettingsIcon, Users, Lock, Plus, Trash2, Shield, KeyRound, PiggyBank, ChevronDown } from 'lucide-react';
+import { Settings as SettingsIcon, Users, Lock, Plus, Trash2, Shield, KeyRound, PiggyBank, ChevronDown, MessageSquare, RotateCcw } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
@@ -32,6 +32,28 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
   const [shopName, setShopName] = useState(settings.shop_name || '');
   const [ownerPw, setOwnerPw] = useState(settings.owner_password || '');
   const [permExpand, setPermExpand] = useState<string | null>(null); // expanded user id for permissions
+
+  const DEFAULT_SMS_TEMPLATE = `السيد/ة : {customer_name}
+المستحق عليكم :
+نقطة شحن أبو عادل : {total_debt} شيكل
+للدفع عبر البنك/المحفظة/جوال بي :
+بسام محمد حجازي
+0598838108
+شكرًا لثقتكم`;
+  const [smsTemplate, setSmsTemplate] = useState(settings.sms_template || DEFAULT_SMS_TEMPLATE);
+
+  const saveSmsTemplate = () => {
+    db.setSetting('sms_template', smsTemplate);
+    refreshSettings();
+    push('تم حفظ قالب رسالة المطالبة', 'success');
+  };
+
+  const resetSmsTemplate = () => {
+    setSmsTemplate(DEFAULT_SMS_TEMPLATE);
+    db.setSetting('sms_template', DEFAULT_SMS_TEMPLATE);
+    refreshSettings();
+    push('تم استعادة النص الافتراضي', 'success');
+  };
 
   const addUser = () => {
     if (!name.trim()) return;
@@ -156,6 +178,24 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
             <p className="text-sm text-slate-500">{settings.debt_lock_pin ? 'مفعّل — كلمة المرور محددة' : 'غير مفعّل — سيُطلب إنشاء كلمة مرور عند أول استخدام'}</p>
           </div>
           <Badge color={settings.debt_lock_pin ? 'emerald' : 'amber'}>{settings.debt_lock_pin ? 'مفعّل' : 'غير مفعّل'}</Badge>
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><MessageSquare size={18} /> قالب رسالة المطالبة (SMS)</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+          استخدم المتغيرات: <code className="bg-slate-100 dark:bg-slate-700 px-1 rounded">{`{customer_name}`}</code> لاسم الزبون،
+          و <code className="bg-slate-100 dark:bg-slate-700 px-1 rounded">{`{total_debt}`}</code> لإجمالي الدين.
+        </p>
+        <textarea
+          className="input font-mono text-sm"
+          rows={8}
+          value={smsTemplate}
+          onChange={(e) => setSmsTemplate(e.target.value)}
+        />
+        <div className="flex gap-2 mt-2">
+          <button onClick={saveSmsTemplate} className="btn-primary text-sm">حفظ القالب</button>
+          <button onClick={resetSmsTemplate} className="btn-ghost text-sm"><RotateCcw size={14} /> استعادة النص الافتراضي</button>
         </div>
       </div>
 
