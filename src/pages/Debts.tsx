@@ -149,7 +149,24 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    // مزامنة تلقائية: إعادة حساب أرصدة القيود لتطابق الجدول عند فتح الصفحة
+    const allCustomers = db.select<any>('customers');
+    let needsSync = false;
+    allCustomers.forEach((c) => {
+      const rows = db.select<any>('debts').filter((d) => d.customer_id === c.id).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+      let running = 0;
+      rows.forEach((r) => {
+        const expected = r.reversed ? running : (running = Math.round(running + Number(r.debit) - Number(r.credit)));
+        if (Math.abs(Number(r.balance_after) - expected) > 0.01) {
+          db.updateById('debts', r.id, { balance_after: expected });
+          needsSync = true;
+        }
+      });
+    });
+    if (needsSync) push('تمت مزامنة الأرصدة تلقائياً', 'info');
+    load();
+  }, []);
 
   const saveCustomer = () => {
     if (!name.trim()) { push('أدخل اسم الزبون', 'error'); return; }
@@ -240,14 +257,19 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     let fixed = 0;
     allCustomers.forEach((c) => {
       const rows = db.select<any>('debts')
-        .filter((d) => d.customer_id === c.id && !d.reversed)
+        .filter((d) => d.customer_id === c.id)
         .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
       let running = 0;
       rows.forEach((r) => {
-        running = Math.round(running + Number(r.debit) - Number(r.credit));
+        if (!r.reversed) running = Math.round(running + Number(r.debit) - Number(r.credit));
         db.updateById('debts', r.id, { balance_after: running });
         fixed++;
       });
+      // sync the customer's stored balance to match computed
+      const computedBalance = rows.filter((r) => !r.reversed).reduce((s: number, r: any) => s + Number(r.debit) - Number(r.credit), 0);
+      if (Math.abs(Number(c.balance || 0) - computedBalance) > 0.01) {
+        db.updateById('customers', c.id, { balance: computedBalance });
+      }
     });
     push(`تمت إعادة حساب الأرصدة — ${fixed} قيد مُحدَّث`, 'success');
     if (statement) openStatement(statement);
@@ -287,7 +309,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     }
 
     // ── 2. إدراج قيود منفصلة لكل نوع (رصيد متراكم صحيح) ───────
-    const lastBalance = debts.length ? Number(debts[debts.length - 1].balance_after) : 0;
+    const lastBalance = debts.filter((d) => !d.reversed).reduce((s, d) => s + (Number(d.debit) || 0) - (Number(d.credit) || 0), 0);
     let runningBalance = lastBalance;
 
     if (chargingPart > 0) {
@@ -379,12 +401,12 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
       const reversedDebit = Number(d.debit);
       // Mark reversed
       db.updateById('debts', d.id, { reversed: true });
-      // Recalculate balances for this row and all subsequent
-      let runningBalance = idx > 0 ? Number(allDebts[idx - 1].balance_after) : 0;
+      // Recalculate balances for this row and all subsequent from scratch
+      let runningBalance = allDebts.slice(0, idx).filter((r) => !r.reversed).reduce((s: number, r: any) => s + Number(r.debit) - Number(r.credit), 0);
       for (let i = idx; i < allDebts.length; i++) {
         const row = allDebts[i];
         if (row.id === d.id || row.reversed) {
-          // reversed row contributes 0 to balance
+          // reversed row keeps the same running balance
         } else {
           runningBalance = runningBalance + Number(row.debit) - Number(row.credit);
         }
@@ -421,7 +443,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     if (amt <= 0) { push('أدخل مبلغًا', 'error'); return; }
     const def = MANUAL_TYPES.find((m) => m.value === manualType);
     const isDebit = def?.isDebit ?? true;
-    const lastBalance = debts.length ? Number(debts[debts.length - 1].balance_after) : 0;
+    const lastBalance = debts.filter((d) => !d.reversed).reduce((s, d) => s + (Number(d.debit) || 0) - (Number(d.credit) || 0), 0);
     const newBalance = isDebit ? lastBalance + amt : lastBalance - amt;
     db.insert('debts', {
       customer_id: statement.id, type: manualType, description: manualDesc || def?.label || 'حركة يدوية',
@@ -459,7 +481,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     const opening = printDebts.length ? (Number(printDebts[0].balance_after) - Number(printDebts[0].debit) + Number(printDebts[0].credit)) : 0;
     const totalDebit = printDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
     const totalCredit = printDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
-    const closing = printDebts.length ? Number(printDebts[printDebts.length - 1].balance_after) : Number(c.balance || 0);
+    const closing = printDebts.length ? (printDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0) - printDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0)) : Number(c.balance || 0);
     const rows = printDebts.map((d) => `
       <tr${d.reversed ? ' style="opacity:0.4"' : ''}>
         <td>${fmtDate(d.created_at)}</td>
@@ -741,7 +763,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
           const opening = fDebts.length ? (fDebts[0].balance_after - fDebts[0].debit + fDebts[0].credit) : 0;
           const totalDebit = fDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
           const totalCredit = fDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
-          const closing = fDebts.length ? fDebts[fDebts.length - 1].balance_after : (statement?.balance || 0);
+          const closing = totalDebit - totalCredit;
           return (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
               <div className="card p-3 bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">رصيد افتتاحي</p><p className="font-bold text-slate-700 dark:text-slate-200">{money(opening)}</p></div>
