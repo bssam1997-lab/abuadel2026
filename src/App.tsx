@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, BatteryCharging, CupSoda, Users, Settings, Wallet,
   Boxes, Truck, UserCheck, FileBarChart, Database, Menu, LogOut,
-  Lock, ChevronDown, Zap, RotateCw, Moon, Sun, X, Sliders, Undo2
+  Lock, ChevronDown, Zap, RotateCw, Moon, Sun, X, Sliders, Undo2,
+  Cloud, CloudOff, RefreshCw
 } from 'lucide-react';
 import { StoreProvider, useStore } from './lib/store';
 import * as db from './lib/db';
 import { ToastProvider, useToast } from './components/Toast';
 import Modal from './components/Modal';
+import { useCloudSync, migrateLocalToCloud } from './hooks/useCloudSync';
 import Dashboard from './pages/Dashboard';
 import Charging from './pages/Charging';
 import Drinks from './pages/Drinks';
@@ -57,6 +59,7 @@ function Shell() {
   const [selectedUser, setSelectedUser] = useState<string>('');
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [dark, setDark] = useState(false);
+  const { status: syncStatus, lastSync, pendingCount, syncNow } = useCloudSync();
 
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupName, setSetupName] = useState('');
@@ -233,6 +236,12 @@ function Shell() {
   };
 
   useEffect(() => {
+    migrateLocalToCloud().then((migrated) => {
+      if (migrated) push('تم رفع البيانات المحلية إلى السحابة', 'success');
+    });
+  }, []);
+
+  useEffect(() => {
     if (settings.orientation === 'landscape' || settings.orientation === 'portrait') setOrientation(settings.orientation);
     const isDark = settings.dark_mode === '1';
     setDark(isDark);
@@ -387,6 +396,20 @@ function Shell() {
 
             {/* Actions */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {/* Cloud sync badge */}
+              <button
+                onClick={() => syncNow().then((n: number) => { if (n) push(`تمت مزامنة ${n} عملية`, 'success'); })}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                  syncStatus === 'online' ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' :
+                  syncStatus === 'syncing' ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400' :
+                  'bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
+                }`}
+                title={lastSync ? `آخر مزامنة: ${new Date(lastSync).toLocaleString('ar')}` : 'لم تتم المزامنة بعد'}
+              >
+                {syncStatus === 'online' ? <Cloud size={14} /> : syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : <CloudOff size={14} />}
+                <span className="hidden sm:inline">{syncStatus === 'online' ? 'متصل' : syncStatus === 'syncing' ? 'جاري المزامنة' : 'غير متصل'}</span>
+                {pendingCount > 0 && <span className="bg-rose-500 text-white rounded-full px-1 text-[8px]">{pendingCount}</span>}
+              </button>
               <button onClick={toggleDark} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400" title="الوضع المظلم">
                 {dark ? <Sun size={18} /> : <Moon size={18} />}
               </button>

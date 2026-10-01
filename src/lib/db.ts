@@ -4,6 +4,7 @@
 // ============================================================
 
 import { getItemSync, setItemSync, hydrateStore, isHydrated } from './storage';
+import { syncToCloud } from '../hooks/useCloudSync';
 
 // كل الجداول في النظام
 export type TableName =
@@ -97,6 +98,7 @@ export function insert<T = any>(table: TableName, row: T & { id?: string }): T &
   const newRow = { ...row, id: row.id || uid() } as T & { id: string };
   rows.push(newRow);
   writeTable(table, rows);
+  syncToCloud(table, 'insert', newRow).catch(() => {});
   return newRow;
 }
 
@@ -107,6 +109,7 @@ export function update<T = any>(table: TableName, predicate: (row: T) => boolean
   for (let i = 0; i < rows.length; i++) {
     if (predicate(rows[i])) {
       rows[i] = { ...rows[i], ...patch };
+      syncToCloud(table, 'update', rows[i]).catch(() => {});
       count++;
     }
   }
@@ -121,15 +124,18 @@ export function updateById<T = any>(table: TableName, id: string, patch: Partial
   if (idx === -1) return null;
   rows[idx] = { ...rows[idx], ...patch };
   writeTable(table, rows);
+  syncToCloud(table, 'update', rows[idx]).catch(() => {});
   return rows[idx];
 }
 
 // حذف صفوف مطابقة
 export function remove<T = any>(table: TableName, predicate: (row: T) => boolean): number {
   const rows = readTable<T>(table);
+  const toRemove = rows.filter(predicate);
   const filtered = rows.filter((r) => !predicate(r));
   const removed = rows.length - filtered.length;
   writeTable(table, filtered);
+  toRemove.forEach((r: any) => { if (r?.id) syncToCloud(table, 'delete', { id: r.id }).catch(() => {}); });
   return removed;
 }
 
