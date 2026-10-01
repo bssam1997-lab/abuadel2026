@@ -149,24 +149,9 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     }
   };
 
-  useEffect(() => {
-    // مزامنة تلقائية: إعادة حساب أرصدة القيود لتطابق الجدول عند فتح الصفحة
-    const allCustomers = db.select<any>('customers');
-    let needsSync = false;
-    allCustomers.forEach((c) => {
-      const rows = db.select<any>('debts').filter((d) => d.customer_id === c.id).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-      let running = 0;
-      rows.forEach((r) => {
-        const expected = r.reversed ? running : (running = Math.round(running + Number(r.debit) - Number(r.credit)));
-        if (Math.abs(Number(r.balance_after) - expected) > 0.01) {
-          db.updateById('debts', r.id, { balance_after: expected });
-          needsSync = true;
-        }
-      });
-    });
-    if (needsSync) push('تمت مزامنة الأرصدة تلقائياً', 'info');
-    load();
-  }, []);
+  const [recalcLoading, setRecalcLoading] = useState(false);
+
+  useEffect(() => { load(); }, []);
 
   const saveCustomer = () => {
     if (!name.trim()) { push('أدخل اسم الزبون', 'error'); return; }
@@ -251,29 +236,33 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
       }));
   };
 
-  // إعادة حساب الرصيد التراكمي لجميع زبائن النظام (§3.3)
+  // إعادة حساب الرصيد — دفعة واحدة بدون تجميد
   const recalculateAllBalances = () => {
-    const allCustomers = db.select<any>('customers');
-    let fixed = 0;
-    allCustomers.forEach((c) => {
-      const rows = db.select<any>('debts')
-        .filter((d) => d.customer_id === c.id)
-        .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-      let running = 0;
-      rows.forEach((r) => {
-        if (!r.reversed) running = Math.round(running + Number(r.debit) - Number(r.credit));
-        db.updateById('debts', r.id, { balance_after: running });
-        fixed++;
+    if (recalcLoading) return;
+    setRecalcLoading(true);
+    try {
+      const allDebts = db.select<any>('debts');
+      // جمع كل التحديثات في دفعة واحدة
+      const updates: { id: string; balance_after: number }[] = [];
+      db.select<any>('customers').forEach((c) => {
+        const rows = allDebts
+          .filter((d) => d.customer_id === c.id)
+          .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+        let running = 0;
+        rows.forEach((r) => {
+          if (!r.reversed) running = Math.round(running + Number(r.debit) - Number(r.credit));
+          updates.push({ id: r.id, balance_after: running });
+        });
       });
-      // sync the customer's stored balance to match computed
-      const computedBalance = rows.filter((r) => !r.reversed).reduce((s: number, r: any) => s + Number(r.debit) - Number(r.credit), 0);
-      if (Math.abs(Number(c.balance || 0) - computedBalance) > 0.01) {
-        db.updateById('customers', c.id, { balance: computedBalance });
-      }
-    });
-    push(`تمت إعادة حساب الأرصدة — ${fixed} قيد مُحدَّث`, 'success');
-    if (statement) openStatement(statement);
-    load();
+      // تطبيق التحديثات دفعة واحدة
+      updates.forEach((u) => db.updateById('debts', u.id, { balance_after: u.balance_after }));
+      push(`تمت إعادة تدقيق ومزامنة الرصيد بنجاح (${updates.length} قيد)`, 'success');
+      // تحديث العرض مرة واحدة فقط
+      if (statement) setDebts(buildUnifiedStatement(statement.id));
+      load();
+    } finally {
+      setRecalcLoading(false);
+    }
   };
 
   // حساب التوزيع التناسبي للسداد التلقائي — أعداد صحيحة كاملة
@@ -743,7 +732,7 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
         <div className="flex flex-wrap gap-2 mb-4">
           <button onClick={() => setPayOpen(true)} className="btn-success text-sm"><HandCoins size={16} /> تسديد دين</button>
           <button onClick={() => setManualOpen(true)} className="btn-ghost text-sm"><Plus size={16} /> حركة يدوية</button>
-          <button onClick={recalculateAllBalances} className="btn-ghost text-xs text-violet-600 dark:text-violet-400" title="إعادة حساب الرصيد التراكمي لجميع الزبائن"><RefreshCw size={14} /> إعادة الحساب</button>
+          <button onClick={recalculateAllBalances} disabled={recalcLoading} className="btn-ghost text-xs text-violet-600 dark:text-violet-400" title="إعادة حساب الرصيد التراكمي لجميع الزبائن"><RefreshCw size={14} className={recalcLoading ? 'animate-spin' : ''} /> {recalcLoading ? 'جارٍ...' : 'إعادة الحساب'}</button>
           <div className="flex items-center gap-1 flex-wrap">
             <input type="date" className="input py-1.5 px-2 text-xs max-w-[130px] dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100" value={printFrom} onChange={(e) => setPrintFrom(e.target.value)} title="من تاريخ" />
             <span className="text-xs text-slate-400">→</span>
