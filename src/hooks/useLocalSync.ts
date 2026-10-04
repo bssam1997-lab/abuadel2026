@@ -47,13 +47,17 @@ function generatePin(): string {
 }
 
 function getPeerName(): string {
-  let n = localStorage.getItem(PEER_NAME_KEY);
-  if (!n) {
-    const labels = ['التابلت', 'اللابتوب', 'الجوال', 'جهاز'];
-    n = labels[Math.floor(Math.random() * labels.length)] + '-' + Math.random().toString(36).slice(2, 5);
-    localStorage.setItem(PEER_NAME_KEY, n);
+  try {
+    let n = localStorage.getItem(PEER_NAME_KEY);
+    if (!n) {
+      const labels = ['التابلت', 'اللابتوب', 'الجوال', 'جهاز'];
+      n = labels[Math.floor(Math.random() * labels.length)] + '-' + Math.random().toString(36).slice(2, 5);
+      localStorage.setItem(PEER_NAME_KEY, n);
+    }
+    return n;
+  } catch {
+    return 'جهاز-' + Math.random().toString(36).slice(2, 5);
   }
-  return n;
 }
 
 // جداول قابلة للمزامنة (بدون operation_log لتجنب الضوضاء)
@@ -97,11 +101,13 @@ export function useLocalSync() {
 
   // استرجاع الإعدادات المحفوظة عند الإقلاع
   useEffect(() => {
-    const saved = getSavedSettings();
-    if (saved && saved.role !== 'none') {
-      if (saved.role === 'host') startHost(true);
-      else if (saved.role === 'client') connectClient(saved.pin, true);
-    }
+    try {
+      const saved = getSavedSettings();
+      if (saved && saved.role !== 'none') {
+        if (saved.role === 'host') startHost(true);
+        else if (saved.role === 'client') connectClient(saved.pin, true);
+      }
+    } catch { /* ignore — safe defaults */ }
   }, []);
 
   // توليد QR عند تغيير الـ PIN

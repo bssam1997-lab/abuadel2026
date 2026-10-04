@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings as SettingsIcon, Users, Lock, Plus, Trash2, Shield, KeyRound, PiggyBank, ChevronDown, MessageSquare, RotateCcw } from 'lucide-react';
+import { Settings as SettingsIcon, Users, Lock, Plus, Trash2, Shield, KeyRound, PiggyBank, ChevronDown, MessageSquare, RotateCcw, Wifi, WifiOff, Smartphone, Laptop, Link2, Unlink, Radio } from 'lucide-react';
 import * as db from '../lib/db';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
@@ -7,6 +7,7 @@ import Modal from '../components/Modal';
 import { SectionTitle, Badge } from '../components/ui';
 import type { AppUser } from '../lib/types';
 import type { useLocalSync } from '../hooks/useLocalSync';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 type Page = 'dashboard' | 'charging' | 'drinks' | 'debts' | 'partners' | 'cashboxes' | 'inventory' | 'suppliers' | 'collectors' | 'reports';
 const ALL_PAGES: { id: Page; label: string }[] = [
@@ -202,6 +203,7 @@ export default function SettingsPage({ requirePin, localSync }: { requirePin: (f
         </div>
       </div>
 
+      <ErrorBoundary>
       <div className="card p-5">
         <h3 className="font-bold text-slate-700 mb-1 flex items-center gap-2"><Radio size={18} /> المزامنة المحلية اللحظية</h3>
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
@@ -309,6 +311,7 @@ export default function SettingsPage({ requirePin, localSync }: { requirePin: (f
           </div>
         )}
       </div>
+      </ErrorBoundary>
 
       <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
