@@ -6,6 +6,7 @@ import { useToast } from '../components/Toast';
 import Modal from '../components/Modal';
 import { SectionTitle, Badge } from '../components/ui';
 import type { AppUser } from '../lib/types';
+import type { useLocalSync } from '../hooks/useLocalSync';
 
 type Page = 'dashboard' | 'charging' | 'drinks' | 'debts' | 'partners' | 'cashboxes' | 'inventory' | 'suppliers' | 'collectors' | 'reports';
 const ALL_PAGES: { id: Page; label: string }[] = [
@@ -22,7 +23,7 @@ const ALL_PAGES: { id: Page; label: string }[] = [
 ];
 const DEFAULT_EMPLOYEE_PAGES: Page[] = ['dashboard', 'charging', 'drinks', 'debts', 'collectors'];
 
-export default function SettingsPage({ requirePin }: { requirePin: (fn: () => void) => void }) {
+export default function SettingsPage({ requirePin, localSync }: { requirePin: (fn: () => void) => void; localSync: ReturnType<typeof useLocalSync> }) {
   const { currentUser, users, settings, refreshUsers, refreshSettings, log } = useStore();
   const { push } = useToast();
   const [addOpen, setAddOpen] = useState(false);
@@ -126,6 +127,8 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
     });
   };
 
+  const [pinInput, setPinInput] = useState('');
+
   return (
     <div className="space-y-5 animate-fade">
       <SectionTitle icon={<SettingsIcon size={24} />}>الإعدادات والصلاحيات</SectionTitle>
@@ -197,6 +200,114 @@ export default function SettingsPage({ requirePin }: { requirePin: (fn: () => vo
           <button onClick={saveSmsTemplate} className="btn-primary text-sm">حفظ القالب</button>
           <button onClick={resetSmsTemplate} className="btn-ghost text-sm"><RotateCcw size={14} /> استعادة النص الافتراضي</button>
         </div>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-bold text-slate-700 mb-1 flex items-center gap-2"><Radio size={18} /> المزامنة المحلية اللحظية</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          مزامنة بيانات لحظية بين أجهزة المحل (التابلت، الجوال، اللابتوب) عبر شبكة الراوتر المحلية.
+        </p>
+
+        {localSync.role === 'none' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* host */}
+            <div className="rounded-xl border-2 border-sky-200 dark:border-sky-800 p-4 text-center">
+              <Smartphone className="mx-auto text-sky-500 mb-2" size={28} />
+              <p className="font-bold text-slate-700 dark:text-slate-200 mb-1">هذا الجهاز هو التابلت (المضيف)</p>
+              <p className="text-xs text-slate-500 mb-3">فعّل وضع البث لتوليد QR + PIN للأجهزة الفرعية</p>
+              <button onClick={() => localSync.startHost()} className="btn-primary w-full">
+                <Wifi size={16} /> تفعيل البث
+              </button>
+            </div>
+            {/* client */}
+            <div className="rounded-xl border-2 border-violet-200 dark:border-violet-800 p-4 text-center">
+              <Laptop className="mx-auto text-violet-500 mb-2" size={28} />
+              <p className="font-bold text-slate-700 dark:text-slate-200 mb-1">جهاز فرعي (جوال / لابتوب)</p>
+              <p className="text-xs text-slate-500 mb-3">أدخل كود PIN من التابلت للاتصال والمزامنة</p>
+              <div className="flex gap-2">
+                <input
+                  className="input text-center text-lg tracking-widest font-bold"
+                  placeholder="PIN"
+                  maxLength={6}
+                  inputMode="numeric"
+                  value={pinInput}
+                  onChange={(e) => setPinInput(e.target.value.replace(/\D/g, ''))}
+                />
+                <button
+                  onClick={() => { localSync.connectClient(pinInput); setPinInput(''); }}
+                  disabled={pinInput.length < 4}
+                  className="btn-primary shrink-0"
+                >
+                  <Link2 size={16} /> اتصال
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* host active */}
+        {localSync.role === 'host' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20">
+              <div className="flex items-center gap-2">
+                <Wifi className="text-emerald-500" size={20} />
+                <div>
+                  <p className="font-bold text-emerald-700 dark:text-emerald-300">البث مفعّل — جهاز مضيف</p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                    {localSync.status === 'connected' ? `متصل — ${localSync.connectedPeers.length} جهاز فرعي` : 'بانتظار اتصال الأجهزة...'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={localSync.stopHost} className="btn-ghost text-rose-500 text-sm">
+                <Unlink size={14} /> إيقاف البث
+              </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center gap-4">
+              {localSync.qrDataUrl && (
+                <div className="text-center">
+                  <img src={localSync.qrDataUrl} alt="QR" className="w-48 h-48 rounded-xl border border-slate-200 dark:border-slate-700" />
+                  <p className="text-xs text-slate-500 mt-1">امسح بكاميرا الجوال</p>
+                </div>
+              )}
+              <div className="text-center sm:text-right">
+                <p className="text-xs text-slate-500 mb-1">كود PIN للابتوب:</p>
+                <p className="text-4xl font-extrabold tracking-[0.3em] text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-900/20 rounded-xl px-4 py-2">{localSync.pin}</p>
+                {localSync.connectedPeers.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-xs font-bold text-slate-500 mb-1">الأجهزة المتصلة:</p>
+                    {localSync.connectedPeers.map((p, i) => (
+                      <span key={i} className="inline-block mx-1 text-xs bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-lg">{p}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* client active */}
+        {localSync.role === 'client' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20">
+              <div className="flex items-center gap-2">
+                {localSync.status === 'connected' ? <Wifi className="text-emerald-500" size={20} /> : <WifiOff className="text-slate-400" size={20} />}
+                <div>
+                  <p className="font-bold text-slate-700 dark:text-slate-200">
+                    {localSync.status === 'connected' ? 'متصل بالمضيف' : 'جارٍ الاتصال...'}
+                  </p>
+                  <p className="text-xs text-slate-500">PIN: {localSync.pin}</p>
+                </div>
+              </div>
+              <button onClick={localSync.disconnectClient} className="btn-ghost text-rose-500 text-sm">
+                <Unlink size={14} /> قطع الاتصال
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+              جميع التغييرات تُزامن لحظياً بين هذا الجهاز والتابلت.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="card p-5">

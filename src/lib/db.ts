@@ -5,6 +5,7 @@
 
 import { getItemSync, setItemSync, hydrateStore, isHydrated } from './storage';
 import { syncToCloud } from '../hooks/useCloudSync';
+import { broadcastLocalChange, setSuppressBroadcast } from '../hooks/useLocalSync';
 
 // كل الجداول في النظام
 export type TableName =
@@ -60,7 +61,10 @@ function writeTable<T = any>(t: TableName, rows: T[]): void {
   setItemSync(tableKey(t), rows);
 }
 
-// توليد معرف فريد
+// كتابة جدول كامل إلى التخزين (للاستخدام من المزامنة المحلية بدون إعادة بث)
+export function writeTableDirect<T = any>(t: TableName, rows: T[]): void {
+  writeTable(t, rows);
+}
 export const uid = (): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
@@ -99,6 +103,7 @@ export function insert<T = any>(table: TableName, row: T & { id?: string }): T &
   rows.push(newRow);
   writeTable(table, rows);
   syncToCloud(table, 'insert', newRow).catch(() => {});
+  broadcastLocalChange(table, 'insert', newRow);
   return newRow;
 }
 
@@ -110,6 +115,7 @@ export function update<T = any>(table: TableName, predicate: (row: T) => boolean
     if (predicate(rows[i])) {
       rows[i] = { ...rows[i], ...patch };
       syncToCloud(table, 'update', rows[i]).catch(() => {});
+      broadcastLocalChange(table, 'update', rows[i]);
       count++;
     }
   }
@@ -125,6 +131,7 @@ export function updateById<T = any>(table: TableName, id: string, patch: Partial
   rows[idx] = { ...rows[idx], ...patch };
   writeTable(table, rows);
   syncToCloud(table, 'update', rows[idx]).catch(() => {});
+  broadcastLocalChange(table, 'update', rows[idx]);
   return rows[idx];
 }
 
@@ -135,7 +142,12 @@ export function remove<T = any>(table: TableName, predicate: (row: T) => boolean
   const filtered = rows.filter((r) => !predicate(r));
   const removed = rows.length - filtered.length;
   writeTable(table, filtered);
-  toRemove.forEach((r: any) => { if (r?.id) syncToCloud(table, 'delete', { id: r.id }).catch(() => {}); });
+  toRemove.forEach((r: any) => {
+    if (r?.id) {
+      syncToCloud(table, 'delete', { id: r.id }).catch(() => {});
+      broadcastLocalChange(table, 'delete', { id: r.id });
+    }
+  });
   return removed;
 }
 

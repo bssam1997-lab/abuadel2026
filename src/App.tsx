@@ -3,13 +3,14 @@ import {
   LayoutDashboard, BatteryCharging, CupSoda, Users, Settings, Wallet,
   Boxes, Truck, UserCheck, FileBarChart, Database, Menu, LogOut,
   Lock, ChevronDown, Zap, RotateCw, Moon, Sun, X, Sliders, Undo2,
-  Cloud, CloudOff, RefreshCw
+  Cloud, CloudOff, RefreshCw, Wifi
 } from 'lucide-react';
 import { StoreProvider, useStore } from './lib/store';
 import * as db from './lib/db';
 import { ToastProvider, useToast } from './components/Toast';
 import Modal from './components/Modal';
 import { useCloudSync, migrateLocalToCloud } from './hooks/useCloudSync';
+import { useLocalSync, setLocalSyncSender } from './hooks/useLocalSync';
 import Dashboard from './pages/Dashboard';
 import Charging from './pages/Charging';
 import Drinks from './pages/Drinks';
@@ -60,6 +61,11 @@ function Shell() {
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [dark, setDark] = useState(false);
   const { status: syncStatus, lastSync, pendingCount, syncNow } = useCloudSync();
+  const localSync = useLocalSync();
+
+  useEffect(() => {
+    setLocalSyncSender(localSync.sendLocalChange);
+  }, [localSync.sendLocalChange]);
 
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupName, setSetupName] = useState('');
@@ -274,7 +280,7 @@ function Shell() {
       case 'collectors': return <Collectors />;
       case 'reports': return <Reports />;
       case 'database': return <DatabasePage />;
-      case 'settings': return <SettingsPage requirePin={requirePin} />;
+      case 'settings': return <SettingsPage requirePin={requirePin} localSync={localSync} />;
     }
   };
 
@@ -396,6 +402,21 @@ function Shell() {
 
             {/* Actions */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {/* Local sync badge */}
+              {localSync.role !== 'none' && (
+                <button
+                  onClick={() => go('settings')}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                    localSync.status === 'connected'
+                      ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500'
+                  }`}
+                  title={localSync.status === 'connected' ? `متصل محلياً — ${localSync.connectedPeers.length} جهاز` : 'غير متصل محلياً'}
+                >
+                  <Wifi size={14} />
+                  <span className="hidden sm:inline">{localSync.status === 'connected' ? `محلي (${localSync.connectedPeers.length})` : 'محلي'}</span>
+                </button>
+              )}
               {/* Cloud sync badge */}
               <button
                 onClick={() => syncNow().then((n: number) => { if (n) push(`تمت مزامنة ${n} عملية`, 'success'); })}

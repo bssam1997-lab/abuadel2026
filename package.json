@@ -13,7 +13,9 @@
     "@fontsource/cairo": "^5.3.0",
     "@fontsource/tajawal": "^5.3.0",
     "@supabase/supabase-js": "^2.117.2",
-    "localforage": "^1.10.0"
+    "@types/qrcode": "^1.5.6",
+    "localforage": "^1.10.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",
