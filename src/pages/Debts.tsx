@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Users, Plus, FileText, HandCoins, Lock, Unlock, Star, Printer, Pencil, Trash2, Undo2, ArrowDownCircle, ArrowUpCircle, Filter, Tag, Search, RefreshCw, Eye, ChevronRight, ChevronLeft, Send } from 'lucide-react';
 import * as db from '../lib/db';
+import { calculateCustomerBalance, recalculateAllBalancesBatch } from '../lib/customerBalance';
 import { useStore } from '../lib/store';
 import { useToast } from '../components/Toast';
 import { money, fmtDateTime, fmtDate } from '../lib/format';
@@ -85,61 +86,16 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     const all = db.select<any>('customers').sort((a, b) => a.name.localeCompare(b.name, 'ar'));
     const allDebts = db.select<any>('debts');
     const enriched = all.map((c) => {
-      const custDebts = allDebts.filter((d) => d.customer_id === c.id && !d.reversed).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-      const totalDebit = custDebts.reduce((s: number, d: any) => s + Number(d.debit), 0);
-      const totalCredit = custDebts.reduce((s: number, d: any) => s + Number(d.credit), 0);
-      const lastMove = custDebts.length ? custDebts[custDebts.length - 1].created_at : null;
-      const balance = totalDebit - totalCredit;
-
-      // ── حساب ديون الأقسام مع ضمان: charging_debt + drinks_debt = balance دائماً ──
-
-      // صافي كل فئة من قيودها المباشرة فقط
-      const cGross = custDebts.filter((d) => d.type === 'charging').reduce((s: number, d: any) => s + Number(d.debit) - Number(d.credit), 0);
-      const dGross = custDebts.filter((d) => d.type === 'drinks').reduce((s: number, d: any) => s + Number(d.debit) - Number(d.credit), 0);
-
-      let chargingDebt = 0;
-      let drinksDebt   = 0;
-
-      if (balance <= 0.001) {
-        // رصيد صفر أو دائن → كلتا الفئتين صفر إجبارياً (لا ديون وهمية)
-        chargingDebt = 0;
-        drinksDebt   = 0;
-      } else {
-        // الخطوة 1: إعادة توزيع الفائض بين الفئتين
-        // (دفع مشروبات أكثر من ديونه يُقلّص دين الشحن والعكس)
-        let cAdj = cGross;
-        let dAdj = dGross;
-        if (cAdj < 0) { dAdj += cAdj; cAdj = 0; } // فائض شحن → يُخصم من مشروبات
-        if (dAdj < 0) { cAdj += dAdj; dAdj = 0; } // فائض مشروبات → يُخصم من شحن
-        cAdj = Math.max(0, cAdj);
-        dAdj = Math.max(0, dAdj);
-
-        // الخطوة 2: توزيع الدائن غير المصنّف (تسوية/خصم/إيداع مباشر) تناسبياً
-        const adjSum    = cAdj + dAdj;
-        const unalloc   = adjSum - balance; // موجب = دائن غير موزع على فئة
-        if (unalloc > 0.001) {
-          if (adjSum > 0) {
-            const scale = balance / adjSum; // مقياس تخفيض متناسب
-            cAdj = Math.max(0, cAdj * scale);
-            dAdj = Math.max(0, dAdj * scale);
-          } else {
-            cAdj = balance; dAdj = 0;
-          }
-        }
-
-        // الخطوة 3: تصحيح دقة الفاصلة وضمان المجموع = balance
-        const finalSum = cAdj + dAdj;
-        if (Math.abs(finalSum - balance) > 0.005) {
-          cAdj = Math.max(0, balance - dAdj);
-        }
-
-        // تقريب لأعداد صحيحة + ضمان chargingDebt + drinksDebt = balance تماماً
-        chargingDebt = Math.round(cAdj);
-        drinksDebt   = Math.round(balance) - chargingDebt;
-        if (drinksDebt < 0) { chargingDebt += drinksDebt; drinksDebt = 0; }
-      }
-
-      return { ...c, total_debit: totalDebit, total_credit: totalCredit, balance, last_move: lastMove, charging_debt: chargingDebt, drinks_debt: drinksDebt };
+      const bal = calculateCustomerBalance(c.id, allDebts);
+      return {
+        ...c,
+        total_debit: bal.totalDebit,
+        total_credit: bal.totalCredit,
+        balance: bal.balance,
+        last_move: bal.lastMoveAt,
+        charging_debt: bal.chargingDebt,
+        drinks_debt: bal.drinksDebt,
+      };
     });
     setCustomers(enriched);
     // مزامنة كشف الحساب المفتوح حالياً فوراً دون إغلاق وإعادة فتح (§3 — real-time sync)
@@ -236,27 +192,13 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
       }));
   };
 
-  // إعادة حساب الرصيد — دفعة واحدة بدون تجميد
+  // إعادة حساب الرصيد — دفعة واحدة بدون تجميد وبمنع حلقات لا نهائية
   const recalculateAllBalances = () => {
     if (recalcLoading) return;
     setRecalcLoading(true);
     try {
-      const allDebts = db.select<any>('debts');
-      // جمع كل التحديثات في دفعة واحدة
-      const updates: { id: string; balance_after: number }[] = [];
-      db.select<any>('customers').forEach((c) => {
-        const rows = allDebts
-          .filter((d) => d.customer_id === c.id)
-          .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-        let running = 0;
-        rows.forEach((r) => {
-          if (!r.reversed) running = Math.round(running + Number(r.debit) - Number(r.credit));
-          updates.push({ id: r.id, balance_after: running });
-        });
-      });
-      // تطبيق التحديثات دفعة واحدة
-      updates.forEach((u) => db.updateById('debts', u.id, { balance_after: u.balance_after }));
-      push(`تمت إعادة تدقيق ومزامنة الرصيد بنجاح (${updates.length} قيد)`, 'success');
+      const result = recalculateAllBalancesBatch();
+      push(`تم تدقيق ومزامنة جميع الأرصدة بنجاح (${result.updated} قيد محدّث لـ ${result.customers} زبون)`, 'success');
       // تحديث العرض مرة واحدة فقط
       if (statement) setDebts(buildUnifiedStatement(statement.id));
       load();
@@ -467,10 +409,11 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
     const periodLabel = printFrom || printTo
       ? `${printFrom ? 'من ' + printFrom : ''} ${printTo ? 'إلى ' + printTo : ''}`.trim()
       : 'كامل السجل';
-    const opening = printDebts.length ? (Number(printDebts[0].balance_after) - Number(printDebts[0].debit) + Number(printDebts[0].credit)) : 0;
-    const totalDebit = printDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
-    const totalCredit = printDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
-    const closing = printDebts.length ? (printDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0) - printDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0)) : Number(c.balance || 0);
+    const activePrint = printDebts.filter((d: any) => !d.reversed);
+    const opening = activePrint.length ? (Number(activePrint[0].balance_after) - Number(activePrint[0].debit) + Number(activePrint[0].credit)) : 0;
+    const totalDebit = activePrint.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
+    const totalCredit = activePrint.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
+    const closing = printDebts.length ? (printDebts.filter((d: any) => !d.reversed).reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0) - printDebts.filter((d: any) => !d.reversed).reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0)) : Number(c.balance || 0);
     const rows = printDebts.map((d) => `
       <tr${d.reversed ? ' style="opacity:0.4"' : ''}>
         <td>${fmtDate(d.created_at)}</td>
@@ -746,19 +689,17 @@ export default function Debts({ requirePin }: { requirePin: (fn: () => void) => 
             <button key={val} onClick={() => setSectionFilter(val)} className={`px-3.5 py-1.5 rounded-lg text-sm font-bold transition ${sectionFilter === val ? 'bg-sky-600 text-white' : 'bg-slate-100 dark:bg-slate-700 dark:text-slate-300'}`}>{label}</button>
           ))}
         </div>
-        {/* Opening + Closing balance summary — ديناميكي حسب التصفية */}
+        {/* Opening + Closing balance summary — من الدالة المركزية الموحدة */}
         {(() => {
-          const fDebts = [...filteredDebts].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-          const opening = fDebts.length ? (fDebts[0].balance_after - fDebts[0].debit + fDebts[0].credit) : 0;
-          const totalDebit = fDebts.reduce((s: number, d: any) => s + (Number(d.debit) || 0), 0);
-          const totalCredit = fDebts.reduce((s: number, d: any) => s + (Number(d.credit) || 0), 0);
-          const closing = totalDebit - totalCredit;
+          if (!statement) return null;
+          const bal = calculateCustomerBalance(statement.id);
+          // القيم المعروضة من المصدر الموحد، تستثني القيود المعكوسة
           return (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-              <div className="card p-3 bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">رصيد افتتاحي</p><p className="font-bold text-slate-700 dark:text-slate-200">{money(opening)}</p></div>
-              <div className="card p-3 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800"><p className="text-xs text-rose-600 dark:text-rose-400 font-semibold">إجمالي المدين</p><p className="font-bold text-rose-700 dark:text-rose-300">{money(totalDebit)}</p></div>
-              <div className="card p-3 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-800"><p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">إجمالي المدفوع</p><p className="font-bold text-emerald-700 dark:text-emerald-300">{money(totalCredit)}</p></div>
-              <div className="card p-3 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800"><p className="text-xs text-sky-600 dark:text-sky-400 font-semibold">الرصيد الحالي</p><p className="font-bold text-sky-700 dark:text-sky-300">{money(closing)}</p></div>
+              <div className="card p-3 bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">رصيد افتتاحي</p><p className="font-bold text-slate-700 dark:text-slate-200">{money(bal.openingBalance)}</p></div>
+              <div className="card p-3 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800"><p className="text-xs text-rose-600 dark:text-rose-400 font-semibold">إجمالي المدين</p><p className="font-bold text-rose-700 dark:text-rose-300">{money(bal.totalDebit)}</p></div>
+              <div className="card p-3 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-800"><p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">إجمالي المدفوع</p><p className="font-bold text-emerald-700 dark:text-emerald-300">{money(bal.totalCredit)}</p></div>
+              <div className="card p-3 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800"><p className="text-xs text-sky-600 dark:text-sky-400 font-semibold">الرصيد الحالي</p><p className="font-bold text-sky-700 dark:text-sky-300">{money(bal.balance)}</p></div>
             </div>
           );
         })()}
