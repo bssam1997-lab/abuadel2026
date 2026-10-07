@@ -386,7 +386,7 @@ export default function Charging() {
   const [deliverCheckoutLevel, setDeliverCheckoutLevel] = useState(100);
 
   const load = () => {
-    setDevices(db.select<Device>('devices').sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')));
+    setDevices([...db.select<Device>('devices')].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')));
   };
 
   useEffect(() => { load(); }, []);
